@@ -26,6 +26,10 @@ interface AuthService {
     suspend fun signUp(input: SignUpInput): SignUpResponse
     suspend fun confirmSignUp(preferredUsername: String, code: String): AuthResponse
     suspend fun resetPassword(usernameOrAlias: String): AuthResponse
+    suspend fun isUserSignedIn(): Boolean
+    suspend fun getSignedInUsername(): String?
+    suspend fun refreshSession(): Boolean
+    suspend fun signOut(): AuthResponse
 }
 
 expect fun platformAuthService(): AuthService

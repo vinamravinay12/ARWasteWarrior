@@ -3,9 +3,7 @@ package com.rivi.arwastewarrior
 import android.content.Context
 import android.util.Log
 import com.amplifyframework.AmplifyException
-import com.amplifyframework.auth.AuthUserAttributeKey
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
-import com.amplifyframework.auth.options.AuthSignUpOptions
 import com.amplifyframework.core.Amplify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -158,6 +156,56 @@ private class AndroidCognitoAuthService : AuthService {
             AuthResponse(false, e.message ?: e.toString())
         }
     }
+
+    override suspend fun isUserSignedIn(): Boolean {
+        val signedIn = fetchAuthSessionSignedIn(tag)
+        Log.i(tag, "isUserSignedIn=$signedIn")
+        return signedIn
+    }
+
+    override suspend fun getSignedInUsername(): String? {
+        return suspendCoroutine { continuation ->
+            Amplify.Auth.getCurrentUser(
+                { user ->
+                    val username = user.username
+                    Log.i(tag, "getSignedInUsername success: username=$username")
+                    continuation.resume(username)
+                },
+                { error ->
+                    Log.w(tag, "getSignedInUsername failed; no active user", error)
+                    continuation.resume(null)
+                }
+            )
+        }
+    }
+
+    override suspend fun refreshSession(): Boolean {
+        val signedIn = fetchAuthSessionSignedIn(tag)
+        Log.i(tag, "refreshSession result signedIn=$signedIn")
+        return signedIn
+    }
+
+    override suspend fun signOut(): AuthResponse {
+        return try {
+            suspendCoroutine { continuation ->
+                Amplify.Auth.signOut(
+                    { result ->
+                        val isComplete = result.javaClass.simpleName == "CompleteSignOut"
+                        if (isComplete) {
+                            Log.i(tag, "signOut success")
+                            continuation.resume(AuthResponse(true, "Logged out successfully"))
+                        } else {
+                            Log.w(tag, "signOut not complete: $result")
+                            continuation.resume(AuthResponse(false, "Sign out incomplete. Please retry."))
+                        }
+                    }
+                )
+            }
+        } catch (e: Exception) {
+            Log.e(tag, "signOut failed", e)
+            AuthResponse(false, e.message ?: e.toString())
+        }
+    }
 }
 
 actual fun platformAuthService(): AuthService = AndroidCognitoAuthService()
@@ -231,4 +279,23 @@ private suspend fun signUpViaDirectCognito(input: SignUpInput): SignUpResponse =
 
 private fun attr(name: String, value: String): JSONObject {
     return JSONObject().put("Name", name).put("Value", value)
+}
+
+private suspend fun fetchAuthSessionSignedIn(tag: String): Boolean {
+    return try {
+        suspendCoroutine { continuation ->
+            Amplify.Auth.fetchAuthSession(
+                { session ->
+                    continuation.resume(session.isSignedIn)
+                },
+                { error ->
+                    Log.e(tag, "fetchAuthSession failed", error)
+                    continuation.resume(false)
+                }
+            )
+        }
+    } catch (e: Exception) {
+        Log.e(tag, "fetchAuthSession exception", e)
+        false
+    }
 }

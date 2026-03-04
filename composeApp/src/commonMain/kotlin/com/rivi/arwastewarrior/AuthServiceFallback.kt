@@ -20,4 +20,20 @@ class UnsupportedAuthService : AuthService {
     override suspend fun resetPassword(usernameOrAlias: String): AuthResponse {
         return AuthResponse(false, "Auth is not configured for this platform yet.")
     }
+
+    override suspend fun isUserSignedIn(): Boolean {
+        return false
+    }
+
+    override suspend fun getSignedInUsername(): String? {
+        return null
+    }
+
+    override suspend fun refreshSession(): Boolean {
+        return false
+    }
+
+    override suspend fun signOut(): AuthResponse {
+        return AuthResponse(false, "Auth is not configured for this platform yet.")
+    }
 }

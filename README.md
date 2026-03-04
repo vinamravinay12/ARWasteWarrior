@@ -25,6 +25,17 @@ in your IDE’s toolbar or build it directly from the terminal:
   .\gradlew.bat :composeApp:assembleDebug
   ```
 
+### Bedrock AI Runtime Config (Android)
+
+Add these properties in `~/.gradle/gradle.properties` or project `gradle.properties`:
+
+```properties
+BEDROCK_AI_ENDPOINT=https://<your-api-gateway-endpoint>/ai/encounter
+BEDROCK_MODEL_ID=amazon.nova-2-lite-v1:0
+```
+
+`BEDROCK_MODEL_ID` defaults to `amazon.nova-2-lite-v1:0` if not provided.
+
 ### Build and Run iOS Application
 
 To build and run the development version of the iOS app, use the run configuration from the run widget

@@ -1,5 +1,6 @@
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -8,12 +9,17 @@ plugins {
     alias(libs.plugins.composeCompiler)
 }
 
+val bedrockAiEndpoint = (project.findProperty("BEDROCK_AI_ENDPOINT") as String?)
+    ?.replace("\"", "\\\"")
+    .orEmpty()
+val bedrockModelId = (project.findProperty("BEDROCK_MODEL_ID") as String?)
+    ?.replace("\"", "\\\"")
+    ?.takeIf { it.isNotBlank() }
+    ?: "amazon.nova-2-lite-v1:0"
+
 kotlin {
-    androidTarget {
-        compilerOptions {
-            jvmTarget.set(JvmTarget.JVM_11)
-        }
-    }
+    @Suppress("DEPRECATION")
+    androidTarget()
     
     listOf(
         iosArm64(),
@@ -31,6 +37,12 @@ kotlin {
             implementation(libs.androidx.activity.compose)
             implementation(libs.amplify.core)
             implementation(libs.amplify.auth.cognito)
+            implementation(libs.androidx.camera.core)
+            implementation(libs.androidx.camera.camera2)
+            implementation(libs.androidx.camera.lifecycle)
+            implementation(libs.androidx.camera.view)
+            implementation(libs.mlkit.obj.detection)
+            implementation(libs.mlkit.image.labeling)
         }
         commonMain.dependencies {
             implementation(libs.compose.runtime)
@@ -59,6 +71,8 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0"
+        buildConfigField("String", "BEDROCK_AI_ENDPOINT", "\"$bedrockAiEndpoint\"")
+        buildConfigField("String", "BEDROCK_MODEL_ID", "\"$bedrockModelId\"")
     }
     packaging {
         resources {
@@ -70,10 +84,17 @@ android {
             isMinifyEnabled = false
         }
     }
+    buildFeatures {
+        buildConfig = true
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+}
+
+tasks.withType<KotlinJvmCompile>().configureEach {
+    compilerOptions.jvmTarget.set(JvmTarget.JVM_11)
 }
 
 dependencies {

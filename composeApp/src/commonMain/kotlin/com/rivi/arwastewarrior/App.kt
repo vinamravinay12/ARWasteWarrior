@@ -17,9 +17,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,24 +29,60 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.rivi.arwastewarrior.detection.AppLanguage
+import com.rivi.arwastewarrior.detection.platformGarbageAiTipService
 import com.rivi.arwastewarrior.detection.SimulatedArAiDetectionService
 import com.rivi.arwastewarrior.ui.AppPalette
 import com.rivi.arwastewarrior.ui.screens.HomeScreen
 import com.rivi.arwastewarrior.ui.screens.LoginScreen
+import com.rivi.arwastewarrior.ui.screens.PlayGameScreen
 import com.rivi.arwastewarrior.ui.screens.SignupScreen
+import com.rivi.arwastewarrior.GameSession
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 private enum class AppScreen {
+    LOADING,
     LOGIN,
     SIGNUP,
-    HOME
+    HOME,
+    PLAY_GAME
 }
 
 @Composable
 @Preview
 fun App() {
-    var screen by remember { mutableStateOf(AppScreen.LOGIN) }
+    var screen by remember { mutableStateOf(AppScreen.LOADING) }
+    var activeUsername by remember { mutableStateOf("Warrior") }
+    var selectedLanguage by remember { mutableStateOf(AppLanguage.ENGLISH) }
+    var gameSession by remember { mutableStateOf(GameSession()) }
     val authService = remember { platformAuthService() }
-    val detectionService = remember { SimulatedArAiDetectionService() }
+    val aiTipService = remember { platformGarbageAiTipService() }
+    val detectionService = remember(aiTipService) { SimulatedArAiDetectionService(aiTipService) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(authService) {
+        val signedIn = authService.isUserSignedIn()
+        if (signedIn) {
+            activeUsername = authService.getSignedInUsername().orEmpty().ifBlank { "Warrior" }
+            screen = AppScreen.HOME
+        } else {
+            screen = AppScreen.LOGIN
+        }
+    }
+
+    LaunchedEffect(screen, authService) {
+        if (screen != AppScreen.HOME && screen != AppScreen.PLAY_GAME) return@LaunchedEffect
+        while (isActive && (screen == AppScreen.HOME || screen == AppScreen.PLAY_GAME)) {
+            delay(10 * 60 * 1000L)
+            val stillSignedIn = authService.refreshSession()
+            if (!stillSignedIn) {
+                activeUsername = "Warrior"
+                screen = AppScreen.LOGIN
+            }
+        }
+    }
 
     MaterialTheme {
         Scaffold { padding ->
@@ -60,6 +98,17 @@ fun App() {
                     .padding(horizontal = 20.dp, vertical = 24.dp)
             ) {
                 when (screen) {
+                    AppScreen.LOADING -> AuthContainer(
+                        title = "Checking Session",
+                        subtitle = "Restoring your warrior login"
+                    ) {
+                        Text(
+                            text = "Please wait...",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = AppPalette.textMuted
+                        )
+                    }
+
                     AppScreen.LOGIN -> AuthContainer(
                         title = "Welcome Back",
                         subtitle = "Login to ARWasteWarriors"
@@ -67,7 +116,12 @@ fun App() {
                         LoginScreen(
                             authService = authService,
                             onCreateAccountClick = { screen = AppScreen.SIGNUP },
-                            onLoginSuccess = { screen = AppScreen.HOME }
+                            onLoginSuccess = {
+                                scope.launch {
+                                    activeUsername = authService.getSignedInUsername().orEmpty().ifBlank { "Warrior" }
+                                    screen = AppScreen.HOME
+                                }
+                            }
                         )
                     }
 
@@ -83,9 +137,27 @@ fun App() {
                     }
 
                     AppScreen.HOME -> HomeScreen(
-                        username = "vinamravinay12",
+                        username = activeUsername,
+                        selectedLanguage = selectedLanguage,
+                        onLanguageChanged = { selectedLanguage = it },
+                        onPlayGame = { screen = AppScreen.PLAY_GAME },
+                        session = gameSession,
+                        onLogout = {
+                            scope.launch {
+                                authService.signOut()
+                                activeUsername = "Warrior"
+                                gameSession = GameSession()
+                                screen = AppScreen.LOGIN
+                            }
+                        }
+                    )
+
+                    AppScreen.PLAY_GAME -> PlayGameScreen(
                         detectionService = detectionService,
-                        onLogout = { screen = AppScreen.LOGIN }
+                        selectedLanguage = selectedLanguage,
+                        session = gameSession,
+                        onSessionUpdate = { gameSession = it },
+                        onBack = { screen = AppScreen.HOME }
                     )
                 }
             }
