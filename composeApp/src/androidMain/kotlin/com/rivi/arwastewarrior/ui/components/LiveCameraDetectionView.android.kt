@@ -249,8 +249,10 @@ private fun inferLiveScanResult(
     val garbageCategoryCandidate = garbagePick?.key
     val garbageScore = garbagePick?.value ?: 0f
     val likelyGarbageByScore = garbageScore >= MIN_GARBAGE_SCORE &&
-        garbageScore >= (nonGarbageScore * 1.15f)
-    val isLikelyGarbage = hasExplicitGarbageCue || likelyGarbageByScore
+        garbageScore >= (nonGarbageScore * 1.05f)
+    val isLikelyGarbage = hasExplicitGarbageCue ||
+        likelyGarbageByScore ||
+        (garbageCategoryCandidate != null && garbageScore >= 0.30f)
     val garbageCategory = if (isLikelyGarbage) garbageCategoryCandidate else null
     val garbageConfidence = if (isLikelyGarbage) toConfidence(garbageScore) else 0
 
@@ -266,7 +268,8 @@ private fun inferLiveScanResult(
         bins
     }
 
-    if (garbageCategory == null && finalBins.isEmpty() && !isLikelyGarbage) return null
+    // Keep emitting label frames even when local detector is unsure.
+    // Backend BIN_SCAN uses these labels to confirm bins that local ML misses.
 
     val largestObjectArea = objects.maxOfOrNull { objectDetection ->
         objectDetection.boundingBox.width() * objectDetection.boundingBox.height()
@@ -296,7 +299,7 @@ private fun inferLiveScanResult(
         isBinClosed = binClosed,
         isBinOverflowing = binOverflowing,
         detectedBins = finalBins,
-        rawLabels = candidates.map { it.text }.distinct().take(6)
+        rawLabels = candidates.map { it.text }.distinct().take(12)
     )
 }
 
@@ -388,23 +391,31 @@ private val GARBAGE_KEYWORDS = mapOf(
 )
 
 private val BIN_KEYWORDS = mapOf(
-    BinType.PLASTIC to listOf("plastic bin", "recycling bin", "recycle", "plastic container"),
-    BinType.PAPER to listOf("paper bin", "paper recycling", "paper container"),
+    BinType.PLASTIC to listOf("plastic bin", "recycling bin", "recycle", "plastic container", "dry waste"),
+    BinType.PAPER to listOf("paper bin", "paper recycling", "paper container", "dry waste"),
     BinType.METAL to listOf("metal bin", "can bin", "aluminum can"),
     BinType.GLASS to listOf("glass bin", "glass container"),
-    BinType.ORGANIC to listOf("compost bin", "organic bin", "green bin", "food waste", "wet waste"),
+    BinType.ORGANIC to listOf("compost bin", "organic bin", "green bin", "food waste", "wet waste", "compostable"),
     BinType.E_WASTE to listOf("e-waste", "electronics bin", "battery bin", "electronic waste"),
     BinType.GENERAL to listOf(
         "trash can",
         "garbage can",
         "waste bin",
         "dustbin",
+        "dust bin",
+        "pedal bin",
         "litter bin",
+        "recycle bin",
+        "dry waste",
+        "wet waste",
         "trash bin",
         "waste container",
         "garbage container",
+        "trash container",
         "waste basket",
-        "trash basket"
+        "trash basket",
+        "garbage basket",
+        "bucket"
     )
 )
 
@@ -413,10 +424,18 @@ private val GENERAL_BIN_PHRASE_KEYWORDS = listOf(
     "garbage can",
     "waste bin",
     "dustbin",
+    "dust bin",
     "litter bin",
     "trash bin",
+    "pedal bin",
+    "recycle bin",
     "waste basket",
+    "garbage basket",
     "rubbish bin",
+    "dry waste",
+    "wet waste",
+    "compostable",
+    "recycle",
     "bin",
     "dustbin",
     "container",
@@ -446,9 +465,9 @@ private val NON_GARBAGE_KEYWORDS = listOf(
     listOf("dog", "cat", "pet", "bird"),
     listOf("tree", "plant", "flower", "grass")
 )
-private const val MIN_GARBAGE_SCORE = 0.45f
-private const val MIN_BIN_SCORE = 0.35f
-private const val MIN_GENERIC_BIN_HINT_SCORE = 0.45f
+private const val MIN_GARBAGE_SCORE = 0.32f
+private const val MIN_BIN_SCORE = 0.22f
+private const val MIN_GENERIC_BIN_HINT_SCORE = 0.24f
 
 private suspend fun <T> Task<T>.awaitResult(): T {
     return suspendCancellableCoroutine { continuation ->

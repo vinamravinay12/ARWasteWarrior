@@ -45,7 +45,8 @@ enum class BinType(val label: String) {
     GLASS("Glass Bin"),
     ORGANIC("Organic Bin"),
     E_WASTE("E-Waste Bin"),
-    GENERAL("General Waste Bin")
+    GENERAL("General Waste Bin"),
+    UNKNOWN("Unknown Bin")
 }
 
 data class BinObservation(
@@ -81,7 +82,49 @@ data class DetectionResult(
     val gameModeOptions: List<GameModeOption> = listOf(GameModeOption.REAL),
     val recommendedMode: GameModeOption = GameModeOption.REAL,
     val diseaseWarningHindi: String = "",
-    val speechTextHindi: String = ""
+    val speechTextHindi: String = "",
+    val sceneHash: String = "",
+    val remainingDemons: Int = 0,
+    val recommendedDestroyCount: Int = 1,
+    val pendingPickupCount: Int = 0,
+    val seenBefore: Boolean = false,
+    val source: String = ""
+)
+
+data class BinScanResult(
+    val binDetected: Boolean,
+    val binType: BinType = BinType.UNKNOWN,
+    val binClosed: Boolean? = null,
+    val binOverflowing: Boolean? = null,
+    val message: String = "",
+    val speechText: String = "",
+    val binSceneHash: String = "",
+    val seenBefore: Boolean = false,
+    val source: String = ""
+)
+
+data class PickupCheckResult(
+    val pickupConfirmed: Boolean,
+    val pickupStrength: Int,
+    val pendingPickupCount: Int = 0,
+    val reason: String = "",
+    val speechText: String = "",
+    val remainingDemons: Int = 0,
+    val sceneCleared: Boolean = false,
+    val sceneHash: String = "",
+    val source: String = ""
+)
+
+data class ThrowCheckResult(
+    val throwConfirmed: Boolean,
+    val destroyCount: Int,
+    val destroyedDemons: Int = 0,
+    val reason: String = "",
+    val speechText: String = "",
+    val remainingDemons: Int = 0,
+    val sceneCleared: Boolean = false,
+    val sceneHash: String = "",
+    val source: String = ""
 )
 
 private val orderedDemonKinds = listOf(

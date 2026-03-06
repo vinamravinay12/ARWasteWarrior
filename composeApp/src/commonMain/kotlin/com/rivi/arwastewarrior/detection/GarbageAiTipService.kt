@@ -13,6 +13,123 @@ interface GarbageAiTipService {
         rawLabels: List<String> = emptyList(),
         detectedBins: List<BinObservation> = emptyList()
     ): GarbageAiEncounter
+
+    suspend fun analyzeBinEncounter(
+        sceneHash: String?,
+        language: AppLanguage = AppLanguage.ENGLISH,
+        rawLabels: List<String> = emptyList(),
+        detectedBins: List<BinObservation> = emptyList(),
+        binClosed: Boolean? = null,
+        binOverflowing: Boolean? = null
+    ): BinAiEncounter {
+        val bestBin = detectedBins.maxByOrNull { it.confidence }?.type ?: BinType.UNKNOWN
+        val detected = detectedBins.isNotEmpty()
+        val message = if (language == AppLanguage.HINDI) {
+            if (detected) "डस्टबिन पहचान लिया गया।" else "डस्टबिन नहीं मिला, कैमरा डस्टबिन पर रखें।"
+        } else {
+            if (detected) "Bin detected." else "Bin not detected. Point camera at a garbage bin."
+        }
+        val speech = if (language == AppLanguage.HINDI) {
+            if (detected) "डस्टबिन मिल गया।" else "कृपया डस्टबिन पर कैमरा रखें।"
+        } else {
+            if (detected) "Bin detected." else "Please point camera at a garbage bin."
+        }
+        return BinAiEncounter(
+            binDetected = detected,
+            binType = bestBin,
+            binClosed = binClosed,
+            binOverflowing = binOverflowing,
+            message = message,
+            speechText = speech,
+            binSceneHash = sceneHash.orEmpty()
+        )
+    }
+
+    suspend fun validatePickup(
+        sceneHash: String,
+        language: AppLanguage = AppLanguage.ENGLISH,
+        category: GarbageCategory? = null,
+        remainingDemons: Int = 0,
+        motionPeak: Float = 0f,
+        motionHits: Int = 0,
+        durationMs: Int = 0,
+        rawLabels: List<String> = emptyList()
+    ): PickupAiDecision {
+        val confirmed = motionPeak >= 0.68f || motionHits >= 3
+        val strength = if (confirmed) {
+            when {
+                motionPeak >= 0.9f || motionHits >= 6 -> 3
+                motionPeak >= 0.75f || motionHits >= 4 -> 2
+                else -> 1
+            }.coerceIn(1, remainingDemons.coerceAtLeast(1))
+        } else {
+            0
+        }
+        val reason = if (confirmed) {
+            if (language == AppLanguage.HINDI) "पिकअप जेस्चर कन्फर्म हुआ।" else "Pickup gesture confirmed."
+        } else {
+            if (language == AppLanguage.HINDI) "पिकअप जेस्चर कमजोर है।" else "Pickup gesture is weak."
+        }
+        return PickupAiDecision(
+            pickupConfirmed = confirmed,
+            pickupStrength = strength,
+            pendingPickupCount = strength,
+            reason = reason,
+            speechText = reason,
+            remainingDemons = remainingDemons,
+            sceneHash = sceneHash
+        )
+    }
+
+    suspend fun validateThrow(
+        sceneHash: String,
+        binSceneHash: String? = null,
+        language: AppLanguage = AppLanguage.ENGLISH,
+        category: GarbageCategory? = null,
+        remainingDemons: Int = 0,
+        pendingPickupCount: Int = 0,
+        requestedDestroyCount: Int = 1,
+        motionPeak: Float = 0f,
+        motionHits: Int = 0,
+        durationMs: Int = 0,
+        binDetected: Boolean = false,
+        rawLabels: List<String> = emptyList()
+    ): ThrowAiDecision {
+        val destroyCap = minOf(
+            3,
+            remainingDemons.coerceAtLeast(0),
+            pendingPickupCount.coerceAtLeast(1),
+            requestedDestroyCount.coerceAtLeast(1)
+        )
+        val confirmed = binDetected && (motionPeak >= 0.55f || motionHits >= 2)
+        val destroyCount = if (confirmed) {
+            when {
+                motionPeak >= 0.9f -> 3
+                motionPeak >= 0.7f -> 2
+                else -> 1
+            }.coerceIn(1, destroyCap.coerceAtLeast(1))
+        } else {
+            0
+        }
+        val destroyed = if (confirmed) destroyCount else 0
+        val newRemaining = (remainingDemons - destroyed).coerceAtLeast(0)
+        val reason = if (confirmed) {
+            if (language == AppLanguage.HINDI) "थ्रो जेस्चर कन्फर्म हुआ।" else "Throw gesture confirmed."
+        } else {
+            if (language == AppLanguage.HINDI) "थ्रो जेस्चर कमजोर है।" else "Throw gesture is weak."
+        }
+        return ThrowAiDecision(
+            throwConfirmed = confirmed,
+            destroyCount = destroyCount,
+            destroyedDemons = destroyed,
+            reason = reason,
+            speechText = reason,
+            remainingDemons = newRemaining,
+            sceneCleared = newRemaining <= 0,
+            sceneHash = sceneHash,
+            binSceneHash = binSceneHash.orEmpty()
+        )
+    }
 }
 
 data class GarbageAiEncounter(
@@ -27,7 +144,50 @@ data class GarbageAiEncounter(
     val gameModeOptions: List<GameModeOption>,
     val recommendedMode: GameModeOption,
     val diseaseWarningHindi: String,
-    val speechTextHindi: String
+    val speechTextHindi: String,
+    val sceneHash: String = "",
+    val remainingDemons: Int? = null,
+    val recommendedDestroyCount: Int? = null,
+    val pendingPickupCount: Int = 0,
+    val seenBefore: Boolean = false,
+    val source: String = ""
+)
+
+data class BinAiEncounter(
+    val binDetected: Boolean,
+    val binType: BinType,
+    val binClosed: Boolean? = null,
+    val binOverflowing: Boolean? = null,
+    val message: String,
+    val speechText: String,
+    val binSceneHash: String = "",
+    val seenBefore: Boolean = false,
+    val source: String = ""
+)
+
+data class PickupAiDecision(
+    val pickupConfirmed: Boolean,
+    val pickupStrength: Int,
+    val pendingPickupCount: Int = 0,
+    val reason: String,
+    val speechText: String,
+    val remainingDemons: Int = 0,
+    val sceneCleared: Boolean = false,
+    val sceneHash: String = "",
+    val source: String = ""
+)
+
+data class ThrowAiDecision(
+    val throwConfirmed: Boolean,
+    val destroyCount: Int,
+    val destroyedDemons: Int = 0,
+    val reason: String,
+    val speechText: String,
+    val remainingDemons: Int = 0,
+    val sceneCleared: Boolean = false,
+    val sceneHash: String = "",
+    val binSceneHash: String = "",
+    val source: String = ""
 )
 
 class RuleBasedGarbageAiTipService : GarbageAiTipService {

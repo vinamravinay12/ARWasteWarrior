@@ -34,6 +34,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -58,23 +59,19 @@ import arwastewarrior.composeapp.generated.resources.demon_virus
 import com.rivi.arwastewarrior.GameSession
 import com.rivi.arwastewarrior.detection.AppLanguage
 import com.rivi.arwastewarrior.detection.DemonKind
-import com.rivi.arwastewarrior.detection.DemonType
 import com.rivi.arwastewarrior.detection.DetectionResult
-import com.rivi.arwastewarrior.detection.GameModeOption
 import com.rivi.arwastewarrior.detection.GarbageCategory
 import com.rivi.arwastewarrior.detection.GarbageDetectionService
-import com.rivi.arwastewarrior.detection.GarbageSize
 import com.rivi.arwastewarrior.detection.LiveScanResult
-import com.rivi.arwastewarrior.detection.buildDemonMix
 import com.rivi.arwastewarrior.detection.defaultDominantKind
 import com.rivi.arwastewarrior.detection.normalizeDemonMix
 import com.rivi.arwastewarrior.rememberCameraPermissionHandler
-import com.rivi.arwastewarrior.rememberPickupGestureDetector
 import com.rivi.arwastewarrior.speech.rememberHindiSpeechPlayer
 import com.rivi.arwastewarrior.ui.AppPalette
 import com.rivi.arwastewarrior.ui.components.LiveCameraDetectionView
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.jetbrains.compose.resources.DrawableResource
 import org.jetbrains.compose.resources.painterResource
 import kotlin.time.Clock
@@ -104,23 +101,37 @@ fun PlayGameScreen(
 ) {
     var gamePhase by remember { mutableStateOf(GamePhase.SCANNING) }
     var currentDetection by remember { mutableStateOf<DetectionResult?>(null) }
+    var currentSceneKey by remember { mutableStateOf<String?>(null) }
+    var currentBinSceneHash by remember { mutableStateOf<String?>(null) }
+    var latestLiveScan by remember { mutableStateOf<LiveScanResult?>(null) }
     var pickProgress by remember { mutableStateOf(0f) }
-    var secondsLeft by remember { mutableStateOf(30) }
+    var secondsLeft by remember { mutableStateOf(2) }
     var isBinDetected by remember { mutableStateOf(false) }
     val binFrameCount = remember { intArrayOf(0) }
+    val sceneDemonRemaining = remember { mutableStateMapOf<String, Int>() }
+    val sceneDetectionCache = remember { mutableStateMapOf<String, DetectionResult>() }
+    val sceneKeyAlias = remember { mutableStateMapOf<String, String>() }
+    val knownBinScenes = remember { mutableStateMapOf<String, String>() }
+    var pendingThrowDemons by remember { mutableStateOf(0) }
+    var pendingThrowCo2Kg by remember { mutableStateOf(0.0) }
+    var pendingThrowSceneKey by remember { mutableStateOf<String?>(null) }
+    var victoryDemons by remember { mutableStateOf(0) }
+    var victoryCo2SavedKg by remember { mutableStateOf(0.0) }
+    var pickupAiPending by remember { mutableStateOf(false) }
+    var throwAiPending by remember { mutableStateOf(false) }
     var isAnalyzing by remember { mutableStateOf(false) }
+    var analyzingSceneKey by remember { mutableStateOf("") }
+    var isBinAnalyzing by remember { mutableStateOf(false) }
+    var lastBinAnalyzeAt by remember { mutableStateOf(0L) }
     var lastAnalyzeAt by remember { mutableStateOf(0L) }
     var lastSignature by remember { mutableStateOf("") }
     var scanStatus by remember {
         mutableStateOf(t(selectedLanguage, "Point camera at garbage to scan.", "कचरे पर कैमरा रखें।"))
     }
     var showPermDialog by remember { mutableStateOf(false) }
-    var isThrowConfirmedByUser by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val speechPlayer = rememberHindiSpeechPlayer()
-    // Pickup: easier to trigger (lift phone while bending), throw: needs deliberate flick
-    val pickupDetector = rememberPickupGestureDetector(motionThreshold = 2.0f, requiredHits = 1)
-    val throwDetector = rememberPickupGestureDetector(motionThreshold = 4.0f, requiredHits = 3)
+    var throwProgress by remember { mutableStateOf(0f) }
     val permHandler = rememberCameraPermissionHandler { granted ->
         if (!granted) showPermDialog = true
     }
@@ -129,97 +140,282 @@ fun PlayGameScreen(
     LaunchedEffect(gamePhase) {
         when (gamePhase) {
             GamePhase.DETECTED -> {
-                secondsLeft = 30
-                while (secondsLeft > 0) {
+                secondsLeft = 2
+                while (secondsLeft > 0 && gamePhase == GamePhase.DETECTED) {
                     delay(1000L)
                     secondsLeft -= 1
                 }
                 if (gamePhase == GamePhase.DETECTED) {
-                    scanStatus = t(selectedLanguage, "Garbage escaped! Scan again.", "कचरा भाग गया! दोबारा स्कैन करें।")
-                    gamePhase = GamePhase.SCANNING
-                    currentDetection = null
+                    val det = currentDetection
+                    if (det == null || !det.isGarbage || det.remainingDemons <= 0) {
+                        gamePhase = GamePhase.SCANNING
+                        currentDetection = null
+                        currentSceneKey = null
+                        return@LaunchedEffect
+                    }
+                    gamePhase = GamePhase.PICKING
+                    speechPlayer.speak(
+                        t(
+                            selectedLanguage,
+                            "Pick the garbage and keep camera on the scene for AI verification.",
+                            "कचरा उठाएं और AI वेरिफिकेशन के लिए कैमरा सीन पर रखें।"
+                        ),
+                        selectedLanguage
+                    )
                 }
             }
             GamePhase.PICKING -> {
-                pickupDetector.reset()
-                pickupDetector.start()
+                pickupAiPending = false
                 pickProgress = 0f
-                try {
-                    // 7-second fallback; exits early on confirmed lift gesture
-                    val totalSteps = 70
-                    for (step in 0 until totalSteps) {
-                        delay(100L)
-                        pickProgress = (step + 1).toFloat() / totalSteps
-                        if (pickupDetector.isPickupDetected) {
-                            pickProgress = 1f
-                            break
-                        }
-                    }
-                } finally {
-                    pickupDetector.stop()
+                val totalSteps = 25 // ~2.5s camera evidence window
+                for (step in 0 until totalSteps) {
+                    delay(100L)
+                    // Keep progress below 100% until backend AI confirms.
+                    pickProgress = ((step + 1).toFloat() / totalSteps) * 0.75f
                 }
-                isBinDetected = false
-                binFrameCount[0] = 0
-                gamePhase = GamePhase.FINDING_BIN
-                speechPlayer.speak(
-                    t(selectedLanguage, "Garbage picked! Find a dustbin and point camera at it.", "कचरा उठा लिया! डस्टबिन खोजें और कैमरा उस पर रखें।"),
-                    selectedLanguage
-                )
+                val det = currentDetection
+                val sceneKey = currentSceneKey
+                if (det != null && sceneKey != null) {
+                    scope.launch {
+                        pickupAiPending = true
+                        pickProgress = 0.85f
+                        val pickupDecision = withTimeoutOrNull(2500L) {
+                            detectionService.checkPickup(
+                                sceneHash = sceneKey,
+                                liveScanResult = latestLiveScan,
+                                language = selectedLanguage,
+                                motionPeak = 0f,
+                                motionHits = 0,
+                                durationMs = 7000
+                            )
+                        }
+                        val availableDemons = (sceneDemonRemaining[sceneKey] ?: det.remainingDemons)
+                            .takeIf { it > 0 }
+                            ?: det.demonCount.coerceAtLeast(1)
+                        val backendPickup = pickupDecision
+                        val confirmedByAi = backendPickup?.pickupConfirmed == true
+                        if (!confirmedByAi) {
+                            pickupAiPending = false
+                            pickProgress = 0f
+                            scanStatus = when {
+                                backendPickup == null -> t(
+                                    selectedLanguage,
+                                    "AI pickup verification unavailable. Scan again.",
+                                    "AI पिकअप वेरिफिकेशन उपलब्ध नहीं है। फिर से स्कैन करें।"
+                                )
+                                else -> backendPickup.reason.ifBlank {
+                                    t(selectedLanguage, "Pickup not confirmed. Scan again.", "पिकअप कन्फर्म नहीं हुआ। फिर स्कैन करें।")
+                                }
+                            }
+                            // Keep the same scene active for retry; do not clear current detection.
+                            gamePhase = GamePhase.DETECTED
+                            return@launch
+                        }
+                        pickupAiPending = false
+                        pickProgress = 1f
+
+                        pendingThrowDemons = backendPickup?.pickupStrength
+                            ?.takeIf { it > 0 }
+                            ?: estimatePickupDemons(
+                                availableDemons = availableDemons,
+                                peakMotion = 0.5f
+                            )
+                        pendingThrowDemons = pendingThrowDemons.coerceIn(1, availableDemons.coerceAtLeast(1))
+                        pendingThrowSceneKey = sceneKey
+                        pendingThrowCo2Kg = det.co2SavedKg *
+                            pendingThrowDemons.toDouble() /
+                            det.demonCount.coerceAtLeast(1).toDouble()
+                        isBinDetected = false
+                        currentBinSceneHash = null
+                        binFrameCount[0] = 0
+                        throwAiPending = false
+                        throwProgress = 0f
+                        gamePhase = GamePhase.FINDING_BIN
+                        speechPlayer.speak(
+                            t(
+                                selectedLanguage,
+                                "Garbage picked. Find a dustbin and point camera at it.",
+                                "कचरा उठा लिया। डस्टबिन खोजें और कैमरा उस पर रखें।"
+                            ),
+                            selectedLanguage
+                        )
+                    }
+                } else {
+                    pickupAiPending = false
+                    scanStatus = t(
+                        selectedLanguage,
+                        "Pickup not confirmed. Scan the garbage again.",
+                        "पिकअप कन्फर्म नहीं हुआ। दोबारा स्कैन करें।"
+                    )
+                    gamePhase = GamePhase.SCANNING
+                    currentDetection = null
+                    currentSceneKey = null
+                    pickProgress = 0f
+                }
             }
             GamePhase.FINDING_BIN -> {
-                // Wait up to 30 seconds for ML Kit to detect a bin; 200ms poll
-                var elapsed = 0
-                while (elapsed < 150 && !isBinDetected) {
+                // Wait until the bin is actually detected; never force success.
+                var elapsedTicks = 0
+                while (gamePhase == GamePhase.FINDING_BIN && !isBinDetected) {
                     delay(200L)
-                    elapsed++
+                    elapsedTicks++
+                    if (elapsedTicks % 75 == 0) {
+                        scanStatus = t(
+                            selectedLanguage,
+                            "Searching for bin... keep the camera steady on a dustbin.",
+                            "डस्टबिन खोज रहे हैं... कैमरा डस्टबिन पर स्थिर रखें।"
+                        )
+                    }
+                }
+                if (gamePhase != GamePhase.FINDING_BIN || !isBinDetected) {
+                    return@LaunchedEffect
                 }
                 speechPlayer.speak(
                     t(selectedLanguage, "Bin spotted! Throw the garbage in!", "डस्टबिन मिला! अब कचरा फेंकें!"),
                     selectedLanguage
                 )
-                isThrowConfirmedByUser = false
-                throwDetector.reset()
+                throwAiPending = false
                 gamePhase = GamePhase.THROWING
             }
             GamePhase.THROWING -> {
-                throwDetector.start()
-                try {
-                    // 10-second fallback; exits early on gesture OR button press
-                    var throwStep = 0
-                    while (throwStep < 100 &&
-                        !throwDetector.isPickupDetected &&
-                        !isThrowConfirmedByUser) {
-                        delay(100L)
-                        throwStep++
-                    }
-                } finally {
-                    throwDetector.stop()
+                throwAiPending = false
+                throwProgress = 0f
+                // Camera evidence window before backend throw verification.
+                var throwStep = 0
+                while (throwStep < 30 && gamePhase == GamePhase.THROWING) {
+                    delay(100L)
+                    throwStep++
+                    // Keep progress below 100% until backend AI confirms.
+                    throwProgress = (throwStep / 30f) * 0.75f
                 }
+                if (gamePhase != GamePhase.THROWING) {
+                    return@LaunchedEffect
+                }
+
+                val sceneKey = pendingThrowSceneKey
                 val det = currentDetection
-                if (det != null) {
-                    onSessionUpdate(
-                        session.addVictory(
-                            demonCount = det.demonsDefeatedGain.coerceAtLeast(1),
-                            co2Kg = det.co2SavedKg
-                        )
+                if (sceneKey == null || det == null) {
+                    gamePhase = GamePhase.SCANNING
+                    return@LaunchedEffect
+                }
+                throwAiPending = true
+                throwProgress = 0.85f
+                val throwDecision = withTimeoutOrNull(3000L) {
+                    detectionService.checkThrow(
+                        sceneHash = sceneKey,
+                        binSceneHash = currentBinSceneHash,
+                        liveScanResult = latestLiveScan,
+                        language = selectedLanguage,
+                        motionPeak = 0f,
+                        motionHits = 0,
+                        durationMs = 10_000,
+                        binDetected = isBinDetected,
+                        requestedDestroyCount = pendingThrowDemons.coerceAtLeast(1)
                     )
                 }
-                speechPlayer.speak(
-                    t(selectedLanguage, "Victory! Demons defeated! Planet saved!", "जीत! डेमन हार गए! पृथ्वी बची!"),
-                    selectedLanguage
+                val throwConfirmedByAi = throwDecision?.throwConfirmed == true
+                if (!throwConfirmedByAi) {
+                    throwAiPending = false
+                    throwProgress = 0f
+                    scanStatus = throwDecision?.reason?.ifBlank {
+                        t(selectedLanguage, "Throw not confirmed. Try again.", "थ्रो कन्फर्म नहीं हुआ। फिर कोशिश करें।")
+                    } ?: t(selectedLanguage, "Throw not confirmed. Try again.", "थ्रो कन्फर्म नहीं हुआ। फिर कोशिश करें।")
+                    gamePhase = GamePhase.FINDING_BIN
+                    return@LaunchedEffect
+                }
+                throwAiPending = false
+                throwProgress = 1f
+
+                val currentRemaining = (sceneDemonRemaining[sceneKey] ?: det.remainingDemons)
+                    .takeIf { it > 0 }
+                    ?: det.demonCount.coerceAtLeast(1)
+                val defeated = throwDecision?.destroyedDemons?.takeIf { it > 0 }
+                    ?: throwDecision?.destroyCount?.coerceIn(1, currentRemaining)
+                    ?: pendingThrowDemons.coerceIn(1, currentRemaining)
+                val updatedRemaining = throwDecision?.remainingDemons
+                    ?.takeIf { it >= 0 }
+                    ?: (currentRemaining - defeated).coerceAtLeast(0)
+                syncSceneState(
+                    sceneKeyAlias = sceneKeyAlias,
+                    sceneDemonRemaining = sceneDemonRemaining,
+                    sceneDetectionCache = sceneDetectionCache,
+                    canonicalSceneKey = sceneKey,
+                    remainingDemons = updatedRemaining
                 )
-                gamePhase = GamePhase.VICTORY
+
+                victoryDemons = defeated
+                victoryCo2SavedKg = pendingThrowCo2Kg.coerceAtLeast(0.0)
+                onSessionUpdate(
+                    session.addVictory(
+                        demonCount = defeated,
+                        co2Kg = victoryCo2SavedKg
+                    )
+                )
+
+                if (updatedRemaining > 0) {
+                    // Continue cleanup in the same scene from pickup flow; do not send user
+                    // back to throw again unless they pick the next garbage item.
+                    val cachedBase = sceneDetectionCache[sceneKey] ?: det
+                    currentDetection = applyRemainingDemons(
+                        detection = cachedBase.copy(sceneHash = sceneKey),
+                        remainingDemons = updatedRemaining
+                    )
+                    currentSceneKey = sceneKey
+                    pendingThrowDemons = 0
+                    pendingThrowCo2Kg = 0.0
+                    pendingThrowSceneKey = null
+                    isBinDetected = false
+                    currentBinSceneHash = null
+                    binFrameCount[0] = 0
+                    throwAiPending = false
+                    throwProgress = 0f
+                    pickupAiPending = false
+                    scanStatus = t(
+                        selectedLanguage,
+                        "$updatedRemaining demons remain. Pick next garbage from this scene.",
+                        "अभी $updatedRemaining डेमन बाकी हैं। इसी सीन से अगला कचरा उठाएं।"
+                    )
+                    speechPlayer.speak(
+                        t(
+                            selectedLanguage,
+                            "$updatedRemaining demons remain. Pick next garbage.",
+                            "अभी $updatedRemaining डेमन बाकी हैं। अगला कचरा उठाएं।"
+                        ),
+                        selectedLanguage
+                    )
+                    gamePhase = GamePhase.DETECTED
+                } else {
+                    scanStatus = t(
+                        selectedLanguage,
+                        "Scene cleared. Look for other garbage.",
+                        "सीन साफ हो गया। अब दूसरा कचरा खोजें।"
+                    )
+                    speechPlayer.speak(
+                        t(selectedLanguage, "Victory! Demons defeated! Planet saved!", "जीत! डेमन हार गए! पृथ्वी बची!"),
+                        selectedLanguage
+                    )
+                    gamePhase = GamePhase.VICTORY
+                }
             }
             GamePhase.VICTORY -> {
                 delay(3500L)
                 // Full reset for next round — clear stale Bedrock state too
                 isAnalyzing = false
+                analyzingSceneKey = ""
+                isBinAnalyzing = false
                 lastSignature = ""
-                isThrowConfirmedByUser = false
                 isBinDetected = false
                 binFrameCount[0] = 0
                 currentDetection = null
+                currentSceneKey = null
+                currentBinSceneHash = null
                 pickProgress = 0f
+                pendingThrowDemons = 0
+                pendingThrowCo2Kg = 0.0
+                pendingThrowSceneKey = null
+                pickupAiPending = false
+                throwAiPending = false
+                throwProgress = 0f
                 gamePhase = GamePhase.SCANNING
                 scanStatus = t(selectedLanguage, "Great work! Keep scanning!", "बढ़िया! स्कैन जारी रखें!")
             }
@@ -244,52 +440,209 @@ fun PlayGameScreen(
                 LiveCameraDetectionView(
                     modifier = Modifier.fillMaxSize(),
                     onScanResult = { liveScan ->
-                        // Only scan when in SCANNING phase and ML Kit is confident
+                        latestLiveScan = liveScan
+                        // Garbage scene scanning: trigger AI analysis, but spawn demons only on trusted AI confirmation.
                         if (gamePhase == GamePhase.SCANNING &&
-                            liveScan.isLikelyGarbage &&
-                            liveScan.garbageCategory != null
+                            (liveScan.isLikelyGarbage || looksLikeGarbageByLabels(liveScan.rawLabels))
                         ) {
-                            val sig = buildSig(liveScan)
-                            val now = Clock.System.now().epochSeconds
-                            if (sig != lastSignature && now - lastAnalyzeAt >= 2L) {
+                            val rawSig = buildGarbageSceneKey(liveScan)
+                            val sig = sceneKeyAlias[rawSig] ?: rawSig
+                            val now = Clock.System.now().toEpochMilliseconds()
+                            val elapsedSinceAnalyze = now - lastAnalyzeAt
+                            val canAnalyze = (sig != lastSignature && elapsedSinceAnalyze >= 700L) ||
+                                (sig == lastSignature && elapsedSinceAnalyze >= 3000L)
+                            if (canAnalyze) {
                                 lastSignature = sig
                                 lastAnalyzeAt = now
 
-                                // ── Stage 1: Instant response from ML Kit (~0ms) ──────────
-                                // Build a preliminary result right now so demons appear
-                                // immediately without waiting for the network.
-                                val preliminary = buildPreliminaryDetection(liveScan)
-                                currentDetection = preliminary
-                                gamePhase = GamePhase.DETECTED
-                                speechPlayer.speak(preliminary.speechTextHindi, selectedLanguage)
+                                val cachedRemaining = sceneDemonRemaining[sig]
+                                if (cachedRemaining != null && cachedRemaining <= 0) {
+                                    scanStatus = t(
+                                        selectedLanguage,
+                                        "This scene is already cleaned. Scan another garbage spot.",
+                                        "यह सीन पहले ही साफ हो चुका है। किसी और कचरे को स्कैन करें।"
+                                    )
+                                } else {
+                                    currentSceneKey = sig
+                                    val cachedDetection = sceneDetectionCache[sig] ?: sceneDetectionCache[rawSig]
+                                    if (cachedDetection != null && cachedRemaining != null) {
+                                        currentDetection = applyRemainingDemons(cachedDetection, cachedRemaining)
+                                        gamePhase = GamePhase.DETECTED
+                                        speechPlayer.speak(cachedDetection.speechTextHindi, selectedLanguage)
+                                    } else {
+                                        scanStatus = t(
+                                            selectedLanguage,
+                                            "Analyzing scene with AI...",
+                                            "AI से सीन का विश्लेषण किया जा रहा है..."
+                                        )
+                                        if (!isAnalyzing || analyzingSceneKey != sig) {
+                                            isAnalyzing = true
+                                            analyzingSceneKey = sig
+                                            val capturedSig = sig
+                                            val capturedRawSig = rawSig
+                                            scope.launch {
+                                                try {
+                                                    val enriched = withTimeoutOrNull(6000L) {
+                                                        detectionService.scanGarbage(liveScan, selectedLanguage)
+                                                    }
+                                                    if (enriched == null) {
+                                                        if (gamePhase == GamePhase.SCANNING && lastSignature == capturedSig) {
+                                                            scanStatus = t(
+                                                                selectedLanguage,
+                                                                "AI is taking longer. Hold steady and keep scanning.",
+                                                                "AI को समय लग रहा है। कैमरा स्थिर रखें और स्कैन जारी रखें।"
+                                                            )
+                                                        }
+                                                        return@launch
+                                                    }
 
-                                // ── Stage 2: Bedrock enrichment in background (~5-10s) ────
-                                // Capture signature NOW so we can verify this result still
-                                // applies when the coroutine finishes (prevents old Bedrock
-                                // responses from overwriting a NEW scan's preliminary result).
-                                if (!isAnalyzing) {
-                                    isAnalyzing = true
-                                    val capturedSig = sig
-                                    scope.launch {
-                                        val enriched = detectionService.detectGarbage(liveScan, selectedLanguage)
-                                        // Only apply if we're still on the SAME scan in DETECTED
-                                        if (gamePhase == GamePhase.DETECTED &&
-                                            lastSignature == capturedSig &&
-                                            enriched.isGarbage) {
-                                            currentDetection = enriched
+                                                    val aiSource = enriched.source.trim().uppercase()
+                                                    // Backward-compatible: older Lambda responses may omit `source`
+                                                    // and parse as UNKNOWN even when backend inference succeeded.
+                                                    val trustedByAi = aiSource == "BEDROCK" ||
+                                                        aiSource == "CACHE" ||
+                                                        aiSource == "UNKNOWN"
+                                                    val confirmedGarbage = trustedByAi &&
+                                                        enriched.isGarbage &&
+                                                        enriched.category != GarbageCategory.UNKNOWN &&
+                                                        (enriched.remainingDemons > 0 || enriched.demonCount > 0)
+                                                    if (!confirmedGarbage) {
+                                                        if (gamePhase == GamePhase.SCANNING && lastSignature == capturedSig) {
+                                                            currentDetection = null
+                                                            currentSceneKey = null
+                                                            scanStatus = t(
+                                                                selectedLanguage,
+                                                                if (!trustedByAi) {
+                                                                    "AI verification unavailable. Check network/Lambda auth."
+                                                                } else {
+                                                                    "No garbage detected. Point to actual waste."
+                                                                },
+                                                                if (!trustedByAi) {
+                                                                    "AI वेरिफिकेशन उपलब्ध नहीं है। नेटवर्क/Lambda auth जांचें।"
+                                                                } else {
+                                                                    "कचरा नहीं मिला। वास्तविक कचरे पर कैमरा रखें।"
+                                                                }
+                                                            )
+                                                        }
+                                                    } else {
+                                                        val backendSceneKey = enriched.sceneHash.ifBlank { capturedSig }
+                                                        sceneKeyAlias[capturedRawSig] = backendSceneKey
+                                                        if (backendSceneKey != capturedSig) {
+                                                            sceneDemonRemaining[capturedSig]?.let { known ->
+                                                                val existing = sceneDemonRemaining[backendSceneKey]
+                                                                sceneDemonRemaining[backendSceneKey] = if (existing == null) {
+                                                                    known
+                                                                } else {
+                                                                    minOf(existing, known)
+                                                                }
+                                                            }
+                                                        }
+                                                        currentSceneKey = backendSceneKey
+                                                        sceneDetectionCache[backendSceneKey] = enriched
+                                                        sceneDetectionCache[capturedRawSig] = enriched.copy(
+                                                            sceneHash = backendSceneKey
+                                                        )
+                                                        val backendSuggested = enriched.remainingDemons
+                                                            .takeIf { it >= 0 }
+                                                        val knownRemaining = sceneDemonRemaining[backendSceneKey]
+                                                            ?: sceneDemonRemaining[capturedSig]
+                                                        val liveRemaining = when {
+                                                            knownRemaining != null && backendSuggested != null -> {
+                                                                minOf(knownRemaining, backendSuggested)
+                                                            }
+                                                            knownRemaining != null -> knownRemaining
+                                                            backendSuggested != null -> backendSuggested
+                                                            else -> enriched.demonCount.coerceAtLeast(1)
+                                                        }
+                                                        syncSceneState(
+                                                            sceneKeyAlias = sceneKeyAlias,
+                                                            sceneDemonRemaining = sceneDemonRemaining,
+                                                            sceneDetectionCache = sceneDetectionCache,
+                                                            canonicalSceneKey = backendSceneKey,
+                                                            remainingDemons = liveRemaining
+                                                        )
+                                                        if (gamePhase == GamePhase.SCANNING &&
+                                                            lastSignature == capturedSig
+                                                        ) {
+                                                            val finalDetection = applyRemainingDemons(enriched, liveRemaining)
+                                                            currentDetection = finalDetection
+                                                            currentSceneKey = backendSceneKey
+                                                            gamePhase = GamePhase.DETECTED
+                                                            speechPlayer.speak(finalDetection.speechTextHindi, selectedLanguage)
+                                                        }
+                                                    }
+                                                } catch (_: Exception) {
+                                                    if (gamePhase == GamePhase.SCANNING && lastSignature == capturedSig) {
+                                                        scanStatus = t(
+                                                            selectedLanguage,
+                                                            "AI check failed. Try scanning again.",
+                                                            "AI जांच विफल रही। फिर से स्कैन करें।"
+                                                        )
+                                                    }
+                                                } finally {
+                                                    if (analyzingSceneKey == capturedSig) {
+                                                        isAnalyzing = false
+                                                        analyzingSceneKey = ""
+                                                    }
+                                                }
+                                            }
                                         }
-                                        isAnalyzing = false
                                     }
                                 }
                             }
                         }
-                        // Bin detection during FINDING_BIN phase
+                        // Bin detection during FINDING_BIN phase; cached bins confirm faster.
                         if (gamePhase == GamePhase.FINDING_BIN) {
-                            if (liveScan.detectedBins.isNotEmpty()) {
+                            val binKey = buildBinSceneKey(liveScan)
+                            val hasBin = liveScan.detectedBins.isNotEmpty()
+                            val now = Clock.System.now().toEpochMilliseconds()
+                            if (hasBin && binKey != null) {
+                                val bestBin = liveScan.detectedBins.maxByOrNull { it.confidence }
+                                val requiredFrames = if (
+                                    knownBinScenes.containsKey(binKey) || (bestBin?.confidence ?: 0) >= 55
+                                ) {
+                                    1
+                                } else {
+                                    2
+                                }
                                 binFrameCount[0]++
-                                if (binFrameCount[0] >= 2) isBinDetected = true
+                                if (binFrameCount[0] >= requiredFrames) {
+                                    if (!isBinDetected) {
+                                        isBinDetected = true
+                                        currentBinSceneHash = binKey
+                                        bestBin?.let { knownBinScenes[binKey] = it.type.name }
+                                    }
+                                }
                             } else {
                                 binFrameCount[0] = 0
+                            }
+
+                            // Always run backend bin scan; do not depend only on local detector.
+                            if (!isBinAnalyzing && now - lastBinAnalyzeAt >= 320L) {
+                                isBinAnalyzing = true
+                                lastBinAnalyzeAt = now
+                                val activeSceneHash = currentSceneKey
+                                val fallbackBinKey = binKey
+                                scope.launch {
+                                    val binResult = withTimeoutOrNull(1500L) {
+                                        detectionService.scanBin(
+                                            liveScanResult = liveScan,
+                                            sceneHash = activeSceneHash,
+                                            language = selectedLanguage
+                                        )
+                                    }
+                                    if (binResult?.binDetected == true) {
+                                        isBinDetected = true
+                                        currentBinSceneHash = binResult.binSceneHash.ifBlank { fallbackBinKey.orEmpty() }
+                                        if (currentBinSceneHash.isNullOrBlank()) {
+                                            currentBinSceneHash = fallbackBinKey
+                                        }
+                                        fallbackBinKey?.let { key ->
+                                            knownBinScenes[key] = binResult.binType.name
+                                        }
+                                    }
+                                    isBinAnalyzing = false
+                                }
                             }
                         }
                     },
@@ -343,7 +696,7 @@ fun PlayGameScreen(
                         .padding(top = 72.dp, end = 16.dp)
                         .size(52.dp)
                         .background(
-                            color = if (secondsLeft <= 10) Color(0xEEFF2222) else Color(0xCC000000),
+                            color = if (secondsLeft <= 2) Color(0xEEFF2222) else Color(0xCC000000),
                             shape = CircleShape
                         ),
                     contentAlignment = Alignment.Center
@@ -364,25 +717,24 @@ fun PlayGameScreen(
                 .fillMaxWidth()
                 .background(Color(0xF5061020))
         ) {
+            val activeDetection = currentDetection
             when (gamePhase) {
                 GamePhase.SCANNING -> ScanningPanel(scanStatus, selectedLanguage, permHandler.hasCameraPermission()) {
                     permHandler.requestCameraPermission()
                 }
-                GamePhase.DETECTED -> DetectedPanel(
-                    detection = currentDetection!!,
-                    selectedLanguage = selectedLanguage,
-                    onPickUp = {
-                        gamePhase = GamePhase.PICKING
-                        speechPlayer.speak(
-                            t(selectedLanguage, "Picking up the garbage...", "कचरा उठा रहे हैं..."),
-                            selectedLanguage
-                        )
+                GamePhase.DETECTED -> if (activeDetection != null) {
+                    DetectedPanel(
+                        detection = activeDetection,
+                        selectedLanguage = selectedLanguage
+                    )
+                } else {
+                    ScanningPanel(scanStatus, selectedLanguage, permHandler.hasCameraPermission()) {
+                        permHandler.requestCameraPermission()
                     }
-                )
+                }
                 GamePhase.PICKING -> PickingPanel(
                     progress = pickProgress,
-                    motionLevel = pickupDetector.motionLevel,
-                    isPickupConfirmed = pickupDetector.isPickupDetected,
+                    awaitingAi = pickupAiPending,
                     selectedLanguage = selectedLanguage
                 )
                 GamePhase.FINDING_BIN -> FindingBinPanel(
@@ -390,15 +742,15 @@ fun PlayGameScreen(
                     selectedLanguage = selectedLanguage
                 )
                 GamePhase.THROWING -> ThrowingPanel(
-                    motionLevel = throwDetector.motionLevel,
-                    isThrowConfirmed = throwDetector.isPickupDetected || isThrowConfirmedByUser,
-                    selectedLanguage = selectedLanguage,
-                    onConfirmThrow = { isThrowConfirmedByUser = true }
+                    progress = throwProgress,
+                    awaitingAi = throwAiPending,
+                    selectedLanguage = selectedLanguage
                 )
                 GamePhase.VICTORY -> VictoryPanel(
-                    detection = currentDetection!!,
                     session = session,
-                    selectedLanguage = selectedLanguage
+                    selectedLanguage = selectedLanguage,
+                    defeatedDemons = victoryDemons,
+                    co2SavedKg = victoryCo2SavedKg
                 )
             }
         }
@@ -600,8 +952,7 @@ private fun ScanningPanel(
 @Composable
 private fun DetectedPanel(
     detection: DetectionResult,
-    selectedLanguage: AppLanguage,
-    onPickUp: () -> Unit
+    selectedLanguage: AppLanguage
 ) {
     Column(
         modifier = Modifier
@@ -631,26 +982,22 @@ private fun DetectedPanel(
                 maxLines = 2
             )
         }
-        Button(
-            onClick = onPickUp,
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4E00)),
-            shape = RoundedCornerShape(14.dp)
-        ) {
-            Text(
-                t(selectedLanguage, "PICK UP GARBAGE", "कचरा उठाएं"),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-        }
+        Text(
+            t(
+                selectedLanguage,
+                "Pickup starts automatically. Keep camera steady.",
+                "पिकअप अपने आप शुरू होगा। कैमरा स्थिर रखें।"
+            ),
+            color = Color(0xFFFFB155),
+            style = MaterialTheme.typography.labelMedium
+        )
     }
 }
 
 @Composable
 private fun PickingPanel(
     progress: Float,
-    motionLevel: Float,
-    isPickupConfirmed: Boolean,
+    awaitingAi: Boolean,
     selectedLanguage: AppLanguage
 ) {
     Column(
@@ -668,7 +1015,7 @@ private fun PickingPanel(
                     progress = { progress },
                     modifier = Modifier.size(72.dp),
                     strokeWidth = 6.dp,
-                    color = if (isPickupConfirmed) AppPalette.accentGreen else Color(0xFFFFB155),
+                    color = Color(0xFFFFB155),
                     trackColor = Color(0xFF1A4455)
                 )
                 Text(
@@ -680,40 +1027,42 @@ private fun PickingPanel(
             }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    if (isPickupConfirmed)
-                        t(selectedLanguage, "✓ PICKUP CONFIRMED!", "✓ उठा लिया!")
-                    else
-                        t(selectedLanguage, "Lift phone to pick up!", "फोन ऊपर उठाएं!"),
-                    color = if (isPickupConfirmed) AppPalette.accentGreen else Color(0xFFFFB155),
+                    if (awaitingAi) {
+                        t(selectedLanguage, "Verifying pickup with AI...", "AI से पिकअप वेरिफाई कर रहे हैं...")
+                    } else {
+                        t(selectedLanguage, "Show picked item briefly to camera", "उठाया हुआ कचरा कैमरे को दिखाएं")
+                    },
+                    color = Color(0xFFFFB155),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    if (isPickupConfirmed)
-                        t(selectedLanguage, "Gesture detected! Finding bin...", "हाव-भाव पकड़ा! डस्टबिन ढूंढ रहे हैं...")
-                    else
-                        t(selectedLanguage, "Move your phone upward as you pick up the garbage", "कचरा उठाते हुए फोन ऊपर उठाएं"),
+                    if (awaitingAi) {
+                        t(selectedLanguage, "Hold steady. Checking latest frames.", "स्थिर रखें। नवीनतम फ्रेम जांच रहे हैं।")
+                    } else {
+                        t(selectedLanguage, "AI verifies pickup from camera frames", "AI कैमरा फ्रेम से पिकअप वेरिफाई करता है")
+                    },
                     color = AppPalette.textMuted,
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         }
 
-        // Live motion meter
+        // Camera evidence progress (not sensor based)
         Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text(
-                t(selectedLanguage, "Motion sensor", "गति सेंसर"),
-                color = AppPalette.textMuted,
-                style = MaterialTheme.typography.labelSmall
-            )
+                Text(
+                    if (awaitingAi) {
+                        t(selectedLanguage, "AI verification", "AI सत्यापन")
+                    } else {
+                        t(selectedLanguage, "Camera evidence", "कैमरा प्रमाण")
+                    },
+                    color = AppPalette.textMuted,
+                    style = MaterialTheme.typography.labelSmall
+                )
             LinearProgressIndicator(
-                progress = { motionLevel },
+                progress = { progress },
                 modifier = Modifier.fillMaxWidth(),
-                color = when {
-                    isPickupConfirmed -> AppPalette.accentGreen
-                    motionLevel > 0.7f -> Color(0xFFFFD700)
-                    else -> Color(0xFF0088CC)
-                },
+                color = if (progress > 0.7f) Color(0xFFFFD700) else Color(0xFF0088CC),
                 trackColor = Color(0xFF1A4455)
             )
         }
@@ -753,10 +1102,9 @@ private fun FindingBinPanel(
 
 @Composable
 private fun ThrowingPanel(
-    motionLevel: Float,
-    isThrowConfirmed: Boolean,
-    selectedLanguage: AppLanguage,
-    onConfirmThrow: () -> Unit
+    progress: Float,
+    awaitingAi: Boolean,
+    selectedLanguage: AppLanguage
 ) {
     Column(
         modifier = Modifier
@@ -765,47 +1113,30 @@ private fun ThrowingPanel(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            if (isThrowConfirmed)
-                t(selectedLanguage, "✓ THROWN! Defeating demons...", "✓ फेंक दिया! डेमन हार रहे हैं...")
-            else
-                t(selectedLanguage, "THROW the garbage into the bin!", "कचरा डस्टबिन में फेंकें!"),
-            color = if (isThrowConfirmed) AppPalette.accentGreen else Color(0xFFFF4E00),
+            if (awaitingAi) {
+                t(selectedLanguage, "Verifying throw with AI...", "AI से थ्रो वेरिफाई कर रहे हैं...")
+            } else {
+                t(selectedLanguage, "THROW the garbage into the bin!", "कचरा डस्टबिन में फेंकें!")
+            },
+            color = Color(0xFFFF4E00),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold
         )
-        if (!isThrowConfirmed) {
-            // Primary action — always reliable for demo
-            Button(
-                onClick = onConfirmThrow,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4E00)),
-                shape = RoundedCornerShape(14.dp)
-            ) {
-                Text(
-                    t(selectedLanguage, "Confirm Throw!", "थ्रो कन्फर्म करें!"),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            // Secondary — physical gesture indicator
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(
-                    t(selectedLanguage, "Or flick phone forward (throw force)", "या फोन आगे झटकें (थ्रो बल)"),
-                    color = AppPalette.textMuted,
-                    style = MaterialTheme.typography.labelSmall
-                )
-                LinearProgressIndicator(
-                    progress = { motionLevel },
-                    modifier = Modifier.fillMaxWidth(),
-                    color = if (motionLevel > 0.7f) Color(0xFFFF4E00) else Color(0xFF0088CC),
-                    trackColor = Color(0xFF1A4455)
-                )
-            }
-        } else {
+        Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
-                t(selectedLanguage, "Gesture / tap detected!", "हाव-भाव / टैप पकड़ा!"),
+                if (awaitingAi) {
+                    t(selectedLanguage, "Hold steady. Checking throw frames.", "स्थिर रखें। थ्रो फ्रेम जांच रहे हैं।")
+                } else {
+                    t(selectedLanguage, "Throw into bin and keep camera steady", "कचरा बिन में डालें और कैमरा स्थिर रखें")
+                },
                 color = AppPalette.textMuted,
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.labelSmall
+            )
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier.fillMaxWidth(),
+                color = if (progress > 0.7f) Color(0xFFFF4E00) else Color(0xFF0088CC),
+                trackColor = Color(0xFF1A4455)
             )
         }
     }
@@ -813,11 +1144,12 @@ private fun ThrowingPanel(
 
 @Composable
 private fun VictoryPanel(
-    detection: DetectionResult,
     session: GameSession,
-    selectedLanguage: AppLanguage
+    selectedLanguage: AppLanguage,
+    defeatedDemons: Int,
+    co2SavedKg: Double
 ) {
-    val gained = detection.demonsDefeatedGain.coerceAtLeast(1) * 15 + 10
+    val gained = defeatedDemons.coerceAtLeast(1) * 15 + 10
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -834,12 +1166,12 @@ private fun VictoryPanel(
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             VictoryStat("+$gained", t(selectedLanguage, "points", "अंक"), Color.White)
             VictoryStat(
-                "${detection.demonsDefeatedGain.coerceAtLeast(1)}",
+                "${defeatedDemons.coerceAtLeast(1)}",
                 t(selectedLanguage, "demons", "डेमन"),
                 Color(0xFFFF6B35)
             )
             VictoryStat(
-                formatKg(detection.co2SavedKg),
+                formatKg(co2SavedKg),
                 t(selectedLanguage, "CO₂ saved", "CO₂ बचाया"),
                 AppPalette.accentGreen
             )
@@ -876,71 +1208,130 @@ private fun Badge(text: String, color: Color) {
     }
 }
 
-// ── Preliminary detection (instant, ML Kit only — no network) ────────────────
-//
-// Demon count is intentionally varied by rawLabels.size + confidence so the
-// same garbage type spawns different counts depending on scan quality/context.
-
-private fun buildPreliminaryDetection(liveScan: LiveScanResult): DetectionResult {
-    val category = liveScan.garbageCategory ?: GarbageCategory.PLASTIC
-
-    val base = when (category) {
-        GarbageCategory.E_WASTE -> 4
-        GarbageCategory.PLASTIC, GarbageCategory.METAL -> 3
-        GarbageCategory.ORGANIC, GarbageCategory.PAPER, GarbageCategory.GLASS -> 2
-        GarbageCategory.UNKNOWN -> 1
-    }
-    val sizeBonus = when (liveScan.garbageSize) {
-        GarbageSize.SMALL -> 0; GarbageSize.MEDIUM -> 1; GarbageSize.LARGE -> 2
-    }
-    // contextBonus = 0..2  — varies with how many ML Kit labels fired and confidence level
-    val contextBonus = ((liveScan.rawLabels.size / 2) + (liveScan.confidence / 50)).coerceIn(0, 2)
-    val demonCount = (base + sizeBonus + contextBonus).coerceIn(1, 8)
-
-    val demonType = when (category) {
-        GarbageCategory.E_WASTE -> DemonType.E_WASTE
-        GarbageCategory.ORGANIC -> DemonType.ORGANIC
-        else -> DemonType.PLASTIC
-    }
-    val dominantKind = defaultDominantKind(category)
-
-    return DetectionResult(
-        category = category,
-        isGarbage = true,
-        confidence = liveScan.confidence.coerceIn(55, 99),
-        aiTip = "${category.label} waste detected. AI is generating tips...",
-        binIssue = if (liveScan.detectedBins.isNotEmpty()) "Bin detected nearby." else "Locate the correct bin.",
-        actionPrompt = "Pick up the garbage and throw it in the correct bin.",
-        co2SavedKg = co2ForCategory(category),
-        demonsDefeatedGain = demonCount,
-        demonCount = demonCount,
-        demonType = demonType,
-        demonMix = buildDemonMix(demonCount, dominantKind),
-        gameModeOptions = listOf(GameModeOption.REAL),
-        recommendedMode = GameModeOption.REAL,
-        diseaseWarningHindi = "कचरे का गलत निपटान बीमारियों का जोखिम बढ़ाता है।",
-        speechTextHindi = "कचरा मिला! जल्दी उठाइए।"
+private fun applyRemainingDemons(
+    detection: DetectionResult,
+    remainingDemons: Int
+): DetectionResult {
+    val safeRemaining = remainingDemons.coerceAtLeast(0)
+    val renderCount = safeRemaining
+    return detection.copy(
+        isGarbage = safeRemaining > 0,
+        demonCount = renderCount,
+        demonsDefeatedGain = renderCount,
+        remainingDemons = safeRemaining,
+        recommendedDestroyCount = if (renderCount > 0) minOf(3, renderCount) else 0,
+        demonMix = if (renderCount > 0) {
+            normalizeDemonMix(
+                proposedMix = detection.demonMix,
+                totalCount = renderCount,
+                dominantKind = defaultDominantKind(detection.category)
+            )
+        } else {
+            emptyList()
+        }
     )
 }
 
-private fun co2ForCategory(category: GarbageCategory): Double = when (category) {
-    GarbageCategory.E_WASTE -> 0.61
-    GarbageCategory.METAL -> 0.52
-    GarbageCategory.PLASTIC -> 0.32
-    GarbageCategory.GLASS -> 0.27
-    GarbageCategory.PAPER -> 0.18
-    GarbageCategory.ORGANIC -> 0.14
-    GarbageCategory.UNKNOWN -> 0.10
+private fun estimatePickupDemons(
+    availableDemons: Int,
+    peakMotion: Float
+): Int {
+    val target = when {
+        peakMotion >= 0.85f -> 3
+        peakMotion >= 0.45f -> 2
+        else -> 1
+    }
+    return target.coerceIn(1, availableDemons.coerceAtLeast(1))
 }
 
-private fun buildSig(scan: LiveScanResult): String {
-    val cat = scan.garbageCategory?.name ?: "NONE"
-    val bins = scan.detectedBins.joinToString("|") { "${it.type.name}:${it.confidence}" }
-    val labels = scan.rawLabels.take(3).joinToString("|")
-    return "$cat::${scan.isLikelyGarbage}::${scan.garbageSize.name}::$bins::$labels"
+private fun buildGarbageSceneKey(scan: LiveScanResult): String {
+    val category = scan.garbageCategory?.name ?: "NONE"
+    val labels = scan.rawLabels
+        .map { it.trim().lowercase() }
+        .filter { it.isNotBlank() }
+        .distinct()
+        .sorted()
+        .take(5)
+        .joinToString("|")
+    return "$category::${scan.garbageSize.name}::$labels"
+}
+
+private fun buildBinSceneKey(scan: LiveScanResult): String? {
+    val labelHints = scan.rawLabels
+        .map { it.trim().lowercase() }
+        .filter { label ->
+            label.contains("bin") ||
+                label.contains("recycle") ||
+                label.contains("compost") ||
+                label.contains("bucket") ||
+                label.contains("basket") ||
+                label.contains("container") ||
+                label.contains("trash") ||
+                label.contains("waste") ||
+                label.contains("dust")
+        }
+        .distinct()
+        .sorted()
+        .take(4)
+        .joinToString("|")
+    val bins = if (scan.detectedBins.isEmpty()) {
+        "NO_LOCAL_BIN"
+    } else {
+        scan.detectedBins
+            .map { it.type.name }
+            .sorted()
+            .joinToString("|")
+    }
+    if (scan.detectedBins.isEmpty() && labelHints.isBlank()) return null
+    return "$bins::${scan.isBinClosed}::${scan.isBinOverflowing}::$labelHints"
+}
+
+private fun looksLikeGarbageByLabels(rawLabels: List<String>): Boolean {
+    if (rawLabels.isEmpty()) return false
+    val combined = rawLabels.joinToString(" ").lowercase()
+    return GARBAGE_SCAN_HINTS.any { hint -> combined.contains(hint) }
+}
+
+private fun syncSceneState(
+    sceneKeyAlias: Map<String, String>,
+    sceneDemonRemaining: MutableMap<String, Int>,
+    sceneDetectionCache: MutableMap<String, DetectionResult>,
+    canonicalSceneKey: String,
+    remainingDemons: Int
+) {
+    val safeRemaining = remainingDemons.coerceAtLeast(0)
+    val targetKeys = buildSet {
+        add(canonicalSceneKey)
+        sceneKeyAlias.forEach { (rawKey, mappedKey) ->
+            if (mappedKey == canonicalSceneKey) add(rawKey)
+        }
+    }
+    targetKeys.forEach { key ->
+        sceneDemonRemaining[key] = safeRemaining
+        sceneDetectionCache[key]?.let { cached ->
+            sceneDetectionCache[key] = applyRemainingDemons(cached, safeRemaining)
+        }
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+private val GARBAGE_SCAN_HINTS = setOf(
+    "garbage",
+    "trash",
+    "waste",
+    "litter",
+    "bottle",
+    "plastic",
+    "wrapper",
+    "can",
+    "paper",
+    "cardboard",
+    "glass",
+    "food",
+    "organic",
+    "peel"
+)
 
 private fun t(lang: AppLanguage, en: String, hi: String) = if (lang == AppLanguage.HINDI) hi else en
 
@@ -955,4 +1346,3 @@ private fun formatKg(kg: Double): String {
     val grams = (kg * 1000).toInt()
     return if (grams < 1000) "${grams}g" else "${grams / 1000}.${(grams % 1000) / 100}kg"
 }
-
