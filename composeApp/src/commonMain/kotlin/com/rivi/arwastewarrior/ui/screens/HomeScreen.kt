@@ -21,9 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import com.rivi.arwastewarrior.GameSession
 import com.rivi.arwastewarrior.detection.AppLanguage
 
 @Composable
@@ -31,8 +29,7 @@ fun HomeScreen(
     username: String,
     selectedLanguage: AppLanguage,
     onLanguageChanged: (AppLanguage) -> Unit,
-    onPlayGame: () -> Unit,
-    session: GameSession = GameSession(),
+    onStartEducation: () -> Unit,
     onLogout: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -96,54 +93,28 @@ fun HomeScreen(
                     )
                 }
                 Text(
-                    if (selectedLanguage == AppLanguage.HINDI) "रियल गेमप्ले" else "Real Gameplay",
+                    if (selectedLanguage == AppLanguage.HINDI) "AI शिक्षा मोड" else "AI Education Mode",
                     color = Color.White,
                     style = MaterialTheme.typography.titleLarge
                 )
-                if (session.itemsDisposed > 0) {
-                    SessionStatsCard(session, selectedLanguage)
-                }
+                Text(
+                    if (selectedLanguage == AppLanguage.HINDI)
+                        "कचरा स्कैन करें, AI से सीखें, और सही निपटान समझें।"
+                    else
+                        "Scan waste, learn with AI, and understand correct disposal.",
+                    color = Color(0xFF9DD9CF),
+                    style = MaterialTheme.typography.bodySmall
+                )
                 Button(
-                    onClick = onPlayGame,
+                    onClick = onStartEducation,
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF4E00)),
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(if (selectedLanguage == AppLanguage.HINDI) "गेम शुरू करें" else "Play Game")
+                    Text(if (selectedLanguage == AppLanguage.HINDI) "AI स्कैन शुरू करें" else "Start AI Scan")
                 }
             }
         }
     }
-}
-
-@Composable
-private fun SessionStatsCard(session: GameSession, selectedLanguage: AppLanguage) {
-    val hi = selectedLanguage == AppLanguage.HINDI
-    androidx.compose.foundation.layout.Row(
-        modifier = androidx.compose.ui.Modifier
-            .fillMaxWidth()
-            .background(Color(0x22FFFFFF), RoundedCornerShape(12.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        horizontalArrangement = Arrangement.SpaceEvenly
-    ) {
-        StatItem(value = "${session.score}", label = if (hi) "अंक" else "Score", color = Color.White)
-        StatItem(value = "${session.demonsDefeated}", label = if (hi) "डेमन हराए" else "Demons", color = Color(0xFFFF6B35))
-        StatItem(value = "${session.itemsDisposed}", label = if (hi) "साफ किया" else "Cleaned", color = Color(0xFF07C49A))
-        StatItem(value = formatSessionKg(session.co2SavedKg), label = "CO₂", color = Color(0xFF9DD9CF))
-    }
-}
-
-@Composable
-private fun StatItem(value: String, label: String, color: Color) {
-    Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
-        Text(value, color = color, style = MaterialTheme.typography.titleSmall,
-            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
-        Text(label, color = Color(0xFF9DD9CF), style = MaterialTheme.typography.labelSmall)
-    }
-}
-
-private fun formatSessionKg(kg: Double): String {
-    val grams = (kg * 1000).toInt()
-    return if (grams < 1000) "${grams}g" else "${grams / 1000}.${(grams % 1000) / 100}kg"
 }
 
 @Composable

@@ -11,7 +11,8 @@ interface GarbageAiTipService {
         binOverflowing: Boolean? = null,
         likelyGarbage: Boolean = true,
         rawLabels: List<String> = emptyList(),
-        detectedBins: List<BinObservation> = emptyList()
+        detectedBins: List<BinObservation> = emptyList(),
+        frameHash: Long = 0L
     ): GarbageAiEncounter
 
     suspend fun analyzeBinEncounter(
@@ -144,7 +145,9 @@ data class GarbageAiEncounter(
     val gameModeOptions: List<GameModeOption>,
     val recommendedMode: GameModeOption,
     val diseaseWarningHindi: String,
+    val diseaseWarningEnglish: String = "",
     val speechTextHindi: String,
+    val speechTextEnglish: String = "",
     val sceneHash: String = "",
     val remainingDemons: Int? = null,
     val recommendedDestroyCount: Int? = null,
@@ -201,7 +204,8 @@ class RuleBasedGarbageAiTipService : GarbageAiTipService {
         binOverflowing: Boolean?,
         likelyGarbage: Boolean,
         rawLabels: List<String>,
-        detectedBins: List<BinObservation>
+        detectedBins: List<BinObservation>,
+        frameHash: Long
     ): GarbageAiEncounter {
         val resolvedCategory = if (category == GarbageCategory.UNKNOWN) null else category
         val isGarbage = likelyGarbage && resolvedCategory != null
@@ -302,41 +306,51 @@ class RuleBasedGarbageAiTipService : GarbageAiTipService {
             }
         }
 
-        val diseaseWarning = if (language == AppLanguage.HINDI) {
-            when (resolvedCategory) {
-                GarbageCategory.PLASTIC -> "गलत प्लास्टिक निपटान से जहरीले रसायन निकलते हैं और सांस तथा हार्मोन संबंधी समस्याएं बढ़ती हैं।"
-                GarbageCategory.PAPER -> "गीला कागज़ बैक्टीरिया और फफूंदी बढ़ाकर एलर्जी और संक्रमण का खतरा बढ़ाता है।"
-                GarbageCategory.METAL -> "जंग लगे धातु कचरे से चोट और संक्रमण का जोखिम बढ़ता है।"
-                GarbageCategory.GLASS -> "टूटा कांच कट और संक्रमण का कारण बन सकता है, इसलिए सुरक्षित निपटान जरूरी है।"
-                GarbageCategory.ORGANIC -> "सड़ा जैविक कचरा मच्छर-मक्खी बढ़ाकर डेंगू और पेट के संक्रमण का खतरा बढ़ाता है।"
-                GarbageCategory.E_WASTE -> "ई-वेस्ट में विषैले तत्व होते हैं जो नसों, किडनी और बच्चों के विकास पर असर डालते हैं।"
-                else -> "यह सामान्य वस्तु लग रही है, कचरा नहीं।"
-            }
-        } else {
-            when (resolvedCategory) {
-                GarbageCategory.PLASTIC -> "Improper plastic disposal increases toxic exposure and respiratory risk."
-                GarbageCategory.PAPER -> "Wet paper can grow bacteria and fungus, increasing infection risk."
-                GarbageCategory.METAL -> "Rusty metal waste can cause cuts and infection."
-                GarbageCategory.GLASS -> "Broken glass can cause injury and infections if not disposed safely."
-                GarbageCategory.ORGANIC -> "Rotting organic waste attracts vectors and raises infection risk."
-                GarbageCategory.E_WASTE -> "E-waste toxins can affect nerves, kidneys, and child development."
-                else -> "This appears to be a normal object, not garbage."
-            }
+        val diseaseWarningEn = when (resolvedCategory) {
+            GarbageCategory.PLASTIC -> "Plastic left on roads blocks drains and causes flooding. Microplastics leach into soil and water, entering the food chain and causing respiratory and hormonal health issues."
+            GarbageCategory.PAPER -> "Wet paper on roads breeds bacteria and mold, increasing infection and allergy risk. It also blocks drains during heavy rain."
+            GarbageCategory.METAL -> "Rusty metal waste on roads causes cuts and tetanus infection. Metal debris can also puncture vehicle tyres."
+            GarbageCategory.GLASS -> "Broken glass on roads causes injuries to people, animals, and vehicle tyres. Shards contaminate soil and are hazardous to children and barefoot pedestrians."
+            GarbageCategory.ORGANIC -> "Rotting organic waste on roads attracts mosquitoes, rats, and flies, spreading diseases like dengue, typhoid, and cholera."
+            GarbageCategory.E_WASTE -> "E-waste on roads leaches lead, mercury, and cadmium into soil and groundwater, causing nerve damage, kidney failure, and developmental issues in children."
+            else -> "Leaving waste on roads causes pollution, blocks drains, spreads disease, and degrades the local environment."
         }
+        val diseaseWarningHi = when (resolvedCategory) {
+            GarbageCategory.PLASTIC -> "गलत प्लास्टिक निपटान से जहरीले रसायन निकलते हैं और सांस तथा हार्मोन संबंधी समस्याएं बढ़ती हैं।"
+            GarbageCategory.PAPER -> "गीला कागज़ बैक्टीरिया और फफूंदी बढ़ाकर एलर्जी और संक्रमण का खतरा बढ़ाता है।"
+            GarbageCategory.METAL -> "जंग लगे धातु कचरे से चोट और संक्रमण का जोखिम बढ़ता है।"
+            GarbageCategory.GLASS -> "टूटा कांच कट और संक्रमण का कारण बन सकता है, इसलिए सुरक्षित निपटान जरूरी है।"
+            GarbageCategory.ORGANIC -> "सड़ा जैविक कचरा मच्छर-मक्खी बढ़ाकर डेंगू और पेट के संक्रमण का खतरा बढ़ाता है।"
+            GarbageCategory.E_WASTE -> "ई-वेस्ट में विषैले तत्व होते हैं जो नसों, किडनी और बच्चों के विकास पर असर डालते हैं।"
+            else -> "कचरे को सड़क पर छोड़ने से प्रदूषण, बीमारी और नालियां बंद होती हैं।"
+        }
+        val diseaseWarning = if (language == AppLanguage.HINDI) diseaseWarningHi else diseaseWarningEn
 
-        val speechText = if (language == AppLanguage.HINDI) {
-            when {
-                !isGarbage -> "यह कचरा नहीं है। कृपया वास्तविक कचरे पर कैमरा रखें।"
-                recommendedBinNearby -> "कचरा उठाइए, कैमरे में दिखाइए, और सही डस्टबिन में डालकर फिर से कैप्चर कीजिए।"
-                else -> "सही डस्टबिन ढूंढिए, फिर कचरा उठाकर उसमें डालने की क्रिया कैप्चर कीजिए।"
-            }
-        } else {
-            when {
-                !isGarbage -> "This is not garbage. Point the camera at actual waste."
-                recommendedBinNearby -> "Pick the garbage, show pick-up on camera, then throw it in the right bin and capture disposal."
-                else -> "Find the correct bin first, then capture pick-up and disposal."
+        val binLabel = when (resolvedCategory) {
+            GarbageCategory.PLASTIC, GarbageCategory.PAPER, GarbageCategory.METAL, GarbageCategory.GLASS ->
+                if (language == AppLanguage.HINDI) "नीले रंग के ड्राई वेस्ट बिन" else "the blue Dry Waste or Recyclables bin"
+            GarbageCategory.ORGANIC ->
+                if (language == AppLanguage.HINDI) "हरे रंग के वेट वेस्ट या कम्पोस्ट बिन" else "the green Wet Waste or Compost bin"
+            GarbageCategory.E_WASTE ->
+                if (language == AppLanguage.HINDI) "ई-वेस्ट चिन्ह वाले अधिकृत ई-वेस्ट बिन" else "the authorized E-Waste bin marked with the e-waste symbol"
+            else ->
+                if (language == AppLanguage.HINDI) "उपयुक्त डस्टबिन" else "the appropriate bin"
+        }
+        val speechTextEn = when {
+            !isGarbage -> "This is not garbage. Point the camera at actual discarded waste."
+            else -> {
+                val catLabel = resolvedCategory?.label ?: "waste"
+                "I detected $catLabel on the scene. Please dispose of it in $binLabel. $diseaseWarningEn"
             }
         }
+        val speechTextHi = when {
+            !isGarbage -> "यह कचरा नहीं है। कृपया वास्तविक कचरे पर कैमरा रखें।"
+            else -> {
+                val catLabel = resolvedCategory?.label ?: "कचरा"
+                "मैंने $catLabel पहचाना है। इसे $binLabel में डालें। $diseaseWarningHi"
+            }
+        }
+        val speechText = if (language == AppLanguage.HINDI) speechTextHi else speechTextEn
 
         val dominantKind = defaultDominantKind(resolvedCategory)
         val mix = if (isGarbage) {
@@ -356,8 +370,10 @@ class RuleBasedGarbageAiTipService : GarbageAiTipService {
             demonMix = mix,
             gameModeOptions = listOf(GameModeOption.REAL),
             recommendedMode = GameModeOption.REAL,
-            diseaseWarningHindi = diseaseWarning,
-            speechTextHindi = speechText
+            diseaseWarningHindi = diseaseWarningHi,
+            diseaseWarningEnglish = diseaseWarningEn,
+            speechTextHindi = speechTextHi,
+            speechTextEnglish = speechTextEn
         )
     }
 }

@@ -134,13 +134,15 @@ private class MlKitLiveAnalyzer(
             return
         }
         processingFrame = true
+        val frameHash = computeDifferenceHash(mediaImage)
         val image = InputImage.fromMediaImage(mediaImage, imageProxy.imageInfo.rotationDegrees)
         scope.launch {
             try {
                 val objects = objectDetector.process(image).awaitResult()
                 val labels = imageLabeler.process(image).awaitResult()
                 val frameArea = (mediaImage.width * mediaImage.height).toFloat()
-                val liveResult = inferLiveScanResult(objects, labels, frameArea) ?: return@launch
+                val liveResult = inferLiveScanResult(objects, labels, frameArea)
+                    ?.copy(frameHash = frameHash) ?: return@launch
                 val now = System.currentTimeMillis()
                 if (now - lastEmitAt >= 500L) {
                     lastEmitAt = now
@@ -159,6 +161,44 @@ private class MlKitLiveAnalyzer(
         scope.cancel()
         objectDetector.close()
         imageLabeler.close()
+    }
+}
+
+// Computes a 64-bit difference hash (dHash) from the Y (luminance) plane.
+//
+// dHash samples a 9×8 grid and sets each bit based on whether a pixel is brighter
+// than its right-hand neighbour in the same row (8 comparisons × 8 rows = 64 bits).
+// Because it uses relative pixel differences rather than absolute brightness,
+// it is robust to global exposure/lighting changes that break average-hash (aHash).
+// Normal hand tremor or slight lighting shift → Hamming distance 1–5 bits.
+// Different scene → Hamming distance 15–40 bits.
+private fun computeDifferenceHash(image: android.media.Image): Long {
+    return try {
+        val plane = image.planes[0]
+        val buffer = plane.buffer
+        val rowStride = plane.rowStride
+        val pixelStride = plane.pixelStride
+        val w = image.width
+        val h = image.height
+        // Sample 9 columns × 8 rows; we compare adjacent column pairs per row.
+        val grid = Array(8) { gy ->
+            IntArray(9) { gx ->
+                val px = (w * (gx + 0.5f) / 9f).toInt().coerceIn(0, w - 1)
+                val py = (h * (gy + 0.5f) / 8f).toInt().coerceIn(0, h - 1)
+                buffer.get(py * rowStride + px * pixelStride).toInt() and 0xFF
+            }
+        }
+        var hash = 0L
+        var bit = 0
+        for (gy in 0 until 8) {
+            for (gx in 0 until 8) {
+                if (grid[gy][gx] > grid[gy][gx + 1]) hash = hash or (1L shl bit)
+                bit++
+            }
+        }
+        hash
+    } catch (_: Exception) {
+        0L
     }
 }
 
@@ -248,13 +288,34 @@ private fun inferLiveScanResult(
         ?.takeIf { it.value > 0f }
     val garbageCategoryCandidate = garbagePick?.key
     val garbageScore = garbagePick?.value ?: 0f
-    val likelyGarbageByScore = garbageScore >= MIN_GARBAGE_SCORE &&
-        garbageScore >= (nonGarbageScore * 1.05f)
-    val isLikelyGarbage = hasExplicitGarbageCue ||
-        likelyGarbageByScore ||
-        (garbageCategoryCandidate != null && garbageScore >= 0.30f)
-    val garbageCategory = if (isLikelyGarbage) garbageCategoryCandidate else null
-    val garbageConfidence = if (isLikelyGarbage) toConfidence(garbageScore) else 0
+    val hasBinContext = binScores.values.any { it >= MIN_BIN_SCORE } ||
+        genericBinHintScore >= MIN_GENERIC_BIN_HINT_SCORE
+    val hasDiscardContextCue = candidates.any { signal ->
+        containsAnyToken(normalizeLabelText(signal.text), DISCARD_CONTEXT_TOKENS)
+    }
+    val hasDisposableCue = candidates.any { signal ->
+        containsAnyToken(normalizeLabelText(signal.text), DISPOSABLE_ITEM_TOKENS)
+    }
+    val strongGarbageByScore = garbageScore >= STRONG_GARBAGE_SCORE &&
+        garbageScore >= (nonGarbageScore * 1.22f)
+    val contextualGarbageByScore = garbageScore >= MIN_GARBAGE_SCORE &&
+        garbageScore >= (nonGarbageScore * 1.1f) &&
+        hasDisposableCue &&
+        (hasDiscardContextCue || hasBinContext)
+    val isLikelyGarbage = garbageCategoryCandidate != null && (
+        hasExplicitGarbageCue ||
+            strongGarbageByScore ||
+            contextualGarbageByScore
+        )
+    val looseCategoryMatch = garbageCategoryCandidate != null &&
+        garbageScore >= 0.30f &&
+        garbageScore >= (nonGarbageScore * 0.9f)
+    val garbageCategory = if (isLikelyGarbage || looseCategoryMatch) {
+        garbageCategoryCandidate
+    } else {
+        null
+    }
+    val garbageConfidence = if (garbageCategory != null) toConfidence(garbageScore) else 0
 
     val bins = binScores.entries
         .filter { it.value >= MIN_BIN_SCORE }
@@ -455,6 +516,45 @@ private val GARBAGE_CUE_TOKENS = setOf(
     "discarded",
     "rubbish"
 )
+private val DISCARD_CONTEXT_TOKENS = setOf(
+    "road",
+    "street",
+    "footpath",
+    "sidewalk",
+    "ground",
+    "floor",
+    "dust",
+    "dirt",
+    "drain",
+    "gutter",
+    "dump",
+    "pile",
+    "scattered",
+    "messy"
+)
+private val DISPOSABLE_ITEM_TOKENS = setOf(
+    "bottle",
+    "wrapper",
+    "packaging",
+    "polybag",
+    "bag",
+    "cup",
+    "lid",
+    "cap",
+    "straw",
+    "sachet",
+    "pouch",
+    "tube",
+    "tissue",
+    "napkin",
+    "receipt",
+    "carton",
+    "foil",
+    "can",
+    "eggshell",
+    "peel",
+    "leftover"
+)
 private val BIN_CLOSED_TOKENS = setOf("closed", "lid", "cover", "cap", "sealed")
 private val BIN_OPEN_TOKENS = setOf("open", "opened", "uncovered")
 private val BIN_OVERFLOW_TOKENS = setOf("overflow", "overflowing", "full", "stuffed", "pile", "spilling")
@@ -465,7 +565,8 @@ private val NON_GARBAGE_KEYWORDS = listOf(
     listOf("dog", "cat", "pet", "bird"),
     listOf("tree", "plant", "flower", "grass")
 )
-private const val MIN_GARBAGE_SCORE = 0.32f
+private const val MIN_GARBAGE_SCORE = 0.42f
+private const val STRONG_GARBAGE_SCORE = 0.72f
 private const val MIN_BIN_SCORE = 0.22f
 private const val MIN_GENERIC_BIN_HINT_SCORE = 0.24f
 

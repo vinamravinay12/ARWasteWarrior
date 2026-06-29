@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+
+    <!-- Bottle body – green glass -->
+    <path
+        android:fillColor="#388E3C"
+        android:pathData="M24,28 L24,52 Q24,56 32,56 Q40,56 40,52 L40,28 Z" />
+
+    <!-- Bottle neck -->
+    <path
+        android:fillColor="#2E7D32"
+        android:pathData="M28,16 L36,16 L36,28 L28,28 Z" />
+
+    <!-- Bottle mouth -->
+    <path
+        android:fillColor="#1B5E20"
+        android:pathData="M29,12 L35,12 L35,16 L29,16 Z" />
+
+    <!-- Shine stripe -->
+    <path
+        android:fillColor="#A5D6A7"
+        android:fillAlpha="0.45"
+        android:pathData="M27,28 L30,28 L30,52 Q29,55 27,52 Z" />
+
+    <!-- Label band -->
+    <path
+        android:fillColor="#1B5E20"
+        android:pathData="M25,36 L39,36 L39,46 L25,46 Z" />
+
+    <!-- Cap -->
+    <path
+        android:fillColor="#795548"
+        android:pathData="M28,9 L36,9 L36,12 L28,12 Z" />
+
+</vector>

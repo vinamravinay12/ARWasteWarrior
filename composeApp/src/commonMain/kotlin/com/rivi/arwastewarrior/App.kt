@@ -33,11 +33,10 @@ import com.rivi.arwastewarrior.detection.AppLanguage
 import com.rivi.arwastewarrior.detection.platformGarbageAiTipService
 import com.rivi.arwastewarrior.detection.SimulatedArAiDetectionService
 import com.rivi.arwastewarrior.ui.AppPalette
+import com.rivi.arwastewarrior.ui.screens.EducationalScanScreen
 import com.rivi.arwastewarrior.ui.screens.HomeScreen
 import com.rivi.arwastewarrior.ui.screens.LoginScreen
-import com.rivi.arwastewarrior.ui.screens.PlayGameScreen
 import com.rivi.arwastewarrior.ui.screens.SignupScreen
-import com.rivi.arwastewarrior.GameSession
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -47,7 +46,7 @@ private enum class AppScreen {
     LOGIN,
     SIGNUP,
     HOME,
-    PLAY_GAME
+    EDUCATION
 }
 
 @Composable
@@ -56,7 +55,6 @@ fun App() {
     var screen by remember { mutableStateOf(AppScreen.LOADING) }
     var activeUsername by remember { mutableStateOf("Warrior") }
     var selectedLanguage by remember { mutableStateOf(AppLanguage.ENGLISH) }
-    var gameSession by remember { mutableStateOf(GameSession()) }
     val authService = remember { platformAuthService() }
     val aiTipService = remember { platformGarbageAiTipService() }
     val detectionService = remember(aiTipService) { SimulatedArAiDetectionService(aiTipService) }
@@ -73,8 +71,8 @@ fun App() {
     }
 
     LaunchedEffect(screen, authService) {
-        if (screen != AppScreen.HOME && screen != AppScreen.PLAY_GAME) return@LaunchedEffect
-        while (isActive && (screen == AppScreen.HOME || screen == AppScreen.PLAY_GAME)) {
+        if (screen != AppScreen.HOME && screen != AppScreen.EDUCATION) return@LaunchedEffect
+        while (isActive && (screen == AppScreen.HOME || screen == AppScreen.EDUCATION)) {
             delay(10 * 60 * 1000L)
             val stillSignedIn = authService.refreshSession()
             if (!stillSignedIn) {
@@ -140,23 +138,19 @@ fun App() {
                         username = activeUsername,
                         selectedLanguage = selectedLanguage,
                         onLanguageChanged = { selectedLanguage = it },
-                        onPlayGame = { screen = AppScreen.PLAY_GAME },
-                        session = gameSession,
+                        onStartEducation = { screen = AppScreen.EDUCATION },
                         onLogout = {
                             scope.launch {
                                 authService.signOut()
                                 activeUsername = "Warrior"
-                                gameSession = GameSession()
                                 screen = AppScreen.LOGIN
                             }
                         }
                     )
 
-                    AppScreen.PLAY_GAME -> PlayGameScreen(
+                    AppScreen.EDUCATION -> EducationalScanScreen(
                         detectionService = detectionService,
                         selectedLanguage = selectedLanguage,
-                        session = gameSession,
-                        onSessionUpdate = { gameSession = it },
                         onBack = { screen = AppScreen.HOME }
                     )
                 }

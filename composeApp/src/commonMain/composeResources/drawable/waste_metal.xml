@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="64dp"
+    android:height="64dp"
+    android:viewportWidth="64"
+    android:viewportHeight="64">
+
+    <!-- Can body – silver-grey -->
+    <path
+        android:fillColor="#90A4AE"
+        android:pathData="M20,18 L44,18 L44,52 L20,52 Z" />
+
+    <!-- Shine stripe -->
+    <path
+        android:fillColor="#ECEFF1"
+        android:fillAlpha="0.55"
+        android:pathData="M25,18 L29,18 L29,52 L25,52 Z" />
+
+    <!-- Top ellipse -->
+    <path
+        android:fillColor="#B0BEC5"
+        android:pathData="M20,15 Q32,11 44,15 L44,18 Q32,22 20,18 Z" />
+
+    <!-- Bottom ellipse -->
+    <path
+        android:fillColor="#607D8B"
+        android:pathData="M20,52 Q32,56 44,52 L44,52 Q32,48 20,52 Z" />
+
+    <!-- Label band -->
+    <path
+        android:fillColor="#546E7A"
+        android:pathData="M20,27 L44,27 L44,43 L20,43 Z" />
+
+    <!-- Recycle arrows (simplified) -->
+    <path
+        android:fillColor="#B0BEC5"
+        android:pathData="M28,33 L32,29 L36,33 L34,33 Q34,36 32,37 Q30,36 30,33 Z" />
+    <path
+        android:fillColor="#B0BEC5"
+        android:pathData="M28,35 L32,39 L28,35 Z" />
+
+    <!-- Pull tab ring -->
+    <path
+        android:fillColor="#CFD8DC"
+        android:pathData="M30,12 L34,12 L33,16 L31,16 Z" />
+    <path
+        android:fillColor="#90A4AE"
+        android:pathData="M31,9 Q32,7 33,9 L34,12 L30,12 Z" />
+
+</vector>

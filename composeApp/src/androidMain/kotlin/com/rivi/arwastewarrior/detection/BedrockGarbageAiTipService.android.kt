@@ -47,7 +47,8 @@ private class BedrockGarbageAiTipService(
         binOverflowing: Boolean?,
         likelyGarbage: Boolean,
         rawLabels: List<String>,
-        detectedBins: List<BinObservation>
+        detectedBins: List<BinObservation>,
+        frameHash: Long
     ): GarbageAiEncounter {
         return withContext(Dispatchers.IO) {
             if (!bedrockEnabled || endpointUrl.isBlank()) {
@@ -92,6 +93,7 @@ private class BedrockGarbageAiTipService(
                     .put("rawLabels", JSONArray(rawLabels.take(12)))
                     .put("detectedBins", toJsonBins(detectedBins))
                     .put("sceneHash", sceneHash)
+                    .apply { if (frameHash != 0L) put("frameHash", frameHash.toString(16).padStart(16, '0')) }
                     .toString()
 
                 val tokens = fetchJwtTokens()
@@ -438,10 +440,12 @@ private class BedrockGarbageAiTipService(
 
             val resolvedCategory = parseGarbageCategory(obj.optString("resolvedCategory"))
                 ?: inputCategory.takeIf { it != GarbageCategory.UNKNOWN }
-            val isGarbage = obj.optBoolean(
+            val modelSaysGarbage = obj.optBoolean(
                 "isGarbage",
                 likelyGarbage && resolvedCategory != null
-            ) && resolvedCategory != null
+            )
+            // Hard gate: backend cannot promote non-garbage when local signal says not garbage.
+            val isGarbage = likelyGarbage && modelSaysGarbage && resolvedCategory != null
 
             val demonType = parseDemonType(obj.optString("demonType"), resolvedCategory)
             val demonCount = obj.optInt("demonCount", defaultDemonCount(garbageSize, binClosed, binOverflowing))
@@ -452,38 +456,28 @@ private class BedrockGarbageAiTipService(
                 totalCount = if (isGarbage) demonCount.coerceAtLeast(1) else 0,
                 dominantKind = dominantKind
             )
-            val diseaseText = firstNonBlank(
-                if (language == AppLanguage.HINDI) {
-                    listOf(
-                        obj.optString("diseaseWarningHindi"),
-                        obj.optString("diseaseWarning"),
-                        obj.optString("diseaseWarningText"),
-                        obj.optString("diseaseWarningEnglish")
-                    )
-                } else {
-                    listOf(
-                        obj.optString("diseaseWarningEnglish"),
-                        obj.optString("diseaseWarning"),
-                        obj.optString("diseaseWarningText"),
-                        obj.optString("diseaseWarningHindi")
-                    )
-                }
-            ) ?: defaultDiseaseWarning(language)
-            val speechText = firstNonBlank(
-                if (language == AppLanguage.HINDI) {
-                    listOf(
-                        obj.optString("speechTextHindi"),
-                        obj.optString("speechText"),
-                        obj.optString("speechTextEnglish")
-                    )
-                } else {
-                    listOf(
-                        obj.optString("speechTextEnglish"),
-                        obj.optString("speechText"),
-                        obj.optString("speechTextHindi")
-                    )
-                }
-            ) ?: diseaseText
+            val diseaseHindi = firstNonBlank(listOf(
+                obj.optString("diseaseWarningHindi"),
+                obj.optString("diseaseWarning"),
+                obj.optString("diseaseWarningText"),
+                obj.optString("diseaseWarningEnglish")
+            )) ?: defaultDiseaseWarning(AppLanguage.HINDI)
+            val diseaseEnglish = firstNonBlank(listOf(
+                obj.optString("diseaseWarningEnglish"),
+                obj.optString("diseaseWarning"),
+                obj.optString("diseaseWarningText"),
+                obj.optString("diseaseWarningHindi")
+            )) ?: defaultDiseaseWarning(AppLanguage.ENGLISH)
+            val diseaseText = if (language == AppLanguage.HINDI) diseaseHindi else diseaseEnglish
+            val speechHindi = firstNonBlank(listOf(
+                obj.optString("speechTextHindi"),
+                obj.optString("speechText")
+            )) ?: diseaseHindi
+            val speechEnglish = firstNonBlank(listOf(
+                obj.optString("speechTextEnglish"),
+                obj.optString("speechText")
+            )) ?: diseaseEnglish
+            val speechText = if (language == AppLanguage.HINDI) speechHindi else speechEnglish
             val binIssue = obj.optString("binIssue")
                 ?.trim()
                 ?.takeIf { it.isNotBlank() }
@@ -514,8 +508,10 @@ private class BedrockGarbageAiTipService(
                 demonMix = demonMix,
                 gameModeOptions = listOf(GameModeOption.REAL),
                 recommendedMode = GameModeOption.REAL,
-                diseaseWarningHindi = diseaseText,
-                speechTextHindi = speechText,
+                diseaseWarningHindi = diseaseHindi,
+                diseaseWarningEnglish = diseaseEnglish,
+                speechTextHindi = speechHindi,
+                speechTextEnglish = speechEnglish,
                 sceneHash = obj.optString("sceneHash").orEmpty(),
                 remainingDemons = obj.optInt("remainingDemons", -1).takeIf { it >= 0 },
                 recommendedDestroyCount = obj.optInt("recommendedDestroyCount", -1).takeIf { it >= 0 },

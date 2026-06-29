@@ -62,7 +62,8 @@ data class LiveScanResult(
     val isBinClosed: Boolean? = null,
     val isBinOverflowing: Boolean? = null,
     val detectedBins: List<BinObservation>,
-    val rawLabels: List<String> = emptyList()
+    val rawLabels: List<String> = emptyList(),
+    val frameHash: Long = 0L
 )
 
 data class DetectionResult(
@@ -82,7 +83,9 @@ data class DetectionResult(
     val gameModeOptions: List<GameModeOption> = listOf(GameModeOption.REAL),
     val recommendedMode: GameModeOption = GameModeOption.REAL,
     val diseaseWarningHindi: String = "",
+    val diseaseWarningEnglish: String = "",
     val speechTextHindi: String = "",
+    val speechTextEnglish: String = "",
     val sceneHash: String = "",
     val remainingDemons: Int = 0,
     val recommendedDestroyCount: Int = 1,

@@ -12,8 +12,13 @@ class SimulatedArAiDetectionService(
         var pendingPickupCount: Int
     )
 
-    private fun cacheKey(scan: LiveScanResult, language: AppLanguage): String? {
-        val cat = scan.garbageCategory ?: return null
+    private fun cacheKey(
+        scan: LiveScanResult,
+        language: AppLanguage,
+        categoryHint: GarbageCategory? = scan.garbageCategory
+    ): String? {
+        val cat = categoryHint ?: return null
+        if (cat == GarbageCategory.UNKNOWN) return null
         val labels = scan.rawLabels.sorted().take(4).joinToString(",")
         val bins = scan.detectedBins.map { it.type.name }.sorted().take(3).joinToString(",")
         return buildString {
@@ -59,8 +64,15 @@ class SimulatedArAiDetectionService(
             language = language
         )
 
-        val preferredCategory = scan.garbageCategory ?: GarbageCategory.UNKNOWN
-        val key = cacheKey(scan, language)
+        val inferredCategory = inferCategoryFromLabels(scan.rawLabels)
+        val preferredCategory = when {
+            scan.garbageCategory != null && scan.garbageCategory != GarbageCategory.UNKNOWN ->
+                scan.garbageCategory
+            inferredCategory != null -> inferredCategory
+            else -> GarbageCategory.UNKNOWN
+        }
+        val inferredLikelyGarbage = inferLikelyGarbage(scan, preferredCategory)
+        val key = cacheKey(scan, language, preferredCategory)
         if (key != null) {
             sessionCache[key]?.let { cached ->
                 val sceneHash = cached.sceneHash.ifBlank { fallbackSceneHash(scan) }
@@ -97,9 +109,10 @@ class SimulatedArAiDetectionService(
             garbageSize = scan.garbageSize,
             binClosed = scan.isBinClosed,
             binOverflowing = scan.isBinOverflowing,
-            likelyGarbage = scan.isLikelyGarbage,
+            likelyGarbage = inferredLikelyGarbage,
             rawLabels = scan.rawLabels,
-            detectedBins = scan.detectedBins
+            detectedBins = scan.detectedBins,
+            frameHash = scan.frameHash
         )
 
         val resolvedCategory = aiEncounter.resolvedCategory ?: preferredCategory
@@ -129,7 +142,9 @@ class SimulatedArAiDetectionService(
                 gameModeOptions = listOf(GameModeOption.REAL),
                 recommendedMode = GameModeOption.REAL,
                 diseaseWarningHindi = aiEncounter.diseaseWarningHindi,
+                diseaseWarningEnglish = aiEncounter.diseaseWarningEnglish,
                 speechTextHindi = aiEncounter.speechTextHindi,
+                speechTextEnglish = aiEncounter.speechTextEnglish,
                 sceneHash = derivedSceneHash,
                 remainingDemons = 0,
                 recommendedDestroyCount = 0,
@@ -185,7 +200,9 @@ class SimulatedArAiDetectionService(
             gameModeOptions = listOf(GameModeOption.REAL),
             recommendedMode = GameModeOption.REAL,
             diseaseWarningHindi = aiEncounter.diseaseWarningHindi,
+            diseaseWarningEnglish = aiEncounter.diseaseWarningEnglish,
             speechTextHindi = aiEncounter.speechTextHindi,
+            speechTextEnglish = aiEncounter.speechTextEnglish,
             sceneHash = derivedSceneHash,
             remainingDemons = actualRemaining,
             recommendedDestroyCount = if (hasGarbage) {
@@ -391,9 +408,77 @@ class SimulatedArAiDetectionService(
             gameModeOptions = listOf(GameModeOption.REAL),
             recommendedMode = GameModeOption.REAL,
             diseaseWarningHindi = aiEncounter.diseaseWarningHindi,
+            diseaseWarningEnglish = aiEncounter.diseaseWarningEnglish,
             speechTextHindi = aiEncounter.speechTextHindi,
+            speechTextEnglish = aiEncounter.speechTextEnglish,
             remainingDemons = 0,
             recommendedDestroyCount = 0
+        )
+    }
+
+    private fun inferLikelyGarbage(
+        scan: LiveScanResult,
+        preferredCategory: GarbageCategory
+    ): Boolean {
+        if (scan.isLikelyGarbage) return true
+        if (preferredCategory != GarbageCategory.UNKNOWN && scan.confidence >= 38) return true
+
+        val labels = scan.rawLabels.map { normalizeLabel(it) }
+        val hasGarbageCue = labels.any { hasAnyToken(it, GARBAGE_CUE_HINT_TOKENS) }
+        val hasDiscardContext = labels.any { hasAnyToken(it, DISCARDED_CONTEXT_HINT_TOKENS) }
+        val hasDisposableCue = labels.any { hasAnyToken(it, DISPOSABLE_HINT_TOKENS) }
+        val hasBinContext = scan.detectedBins.isNotEmpty()
+
+        return hasGarbageCue || (hasDisposableCue && (hasDiscardContext || hasBinContext))
+    }
+
+    private fun inferCategoryFromLabels(rawLabels: List<String>): GarbageCategory? {
+        if (rawLabels.isEmpty()) return null
+        val normalized = rawLabels.map { normalizeLabel(it) }
+        val scores = CATEGORY_HINT_KEYWORDS.mapValues { (_, tokens) ->
+            normalized.sumOf { label ->
+                tokens.count { token -> label.split(" ").any { it == token } }
+            }
+        }
+        val best = scores.maxByOrNull { it.value } ?: return null
+        return if (best.value >= 1) best.key else null
+    }
+
+    private fun normalizeLabel(value: String): String {
+        return value
+            .lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun hasAnyToken(text: String, tokens: Set<String>): Boolean {
+        if (text.isBlank()) return false
+        return text.split(" ").any { it in tokens }
+    }
+
+    private companion object {
+        val GARBAGE_CUE_HINT_TOKENS = setOf(
+            "trash", "waste", "garbage", "litter", "discarded", "rubbish", "dump"
+        )
+        val DISCARDED_CONTEXT_HINT_TOKENS = setOf(
+            "ground", "floor", "road", "street", "footpath", "sidewalk",
+            "drain", "gutter", "dust", "dirt", "messy"
+        )
+        val DISPOSABLE_HINT_TOKENS = setOf(
+            "bottle", "wrapper", "packaging", "polybag", "bag", "cup", "lid",
+            "cap", "straw", "sachet", "pouch", "tube", "tissue", "napkin",
+            "receipt", "carton", "foil", "can", "eggshell", "peel", "leftover",
+            "plastic", "paper", "metal", "glass", "organic", "ewaste",
+            "battery", "charger", "cable", "wire", "electronics"
+        )
+        val CATEGORY_HINT_KEYWORDS = mapOf(
+            GarbageCategory.PLASTIC to setOf("plastic", "bottle", "wrapper", "polybag", "packaging", "sachet"),
+            GarbageCategory.PAPER to setOf("paper", "cardboard", "carton", "receipt", "tissue", "napkin"),
+            GarbageCategory.METAL to setOf("metal", "can", "aluminum", "steel", "tin", "foil"),
+            GarbageCategory.GLASS to setOf("glass", "jar", "bottle"),
+            GarbageCategory.ORGANIC to setOf("organic", "food", "leftover", "peel", "eggshell", "compost"),
+            GarbageCategory.E_WASTE to setOf("ewaste", "electronic", "electronics", "battery", "charger", "cable", "wire")
         )
     }
 
